@@ -11,15 +11,16 @@ import (
 func main() {
 	ctx := context.Background()
 
-	if len(os.Args) != 2 {
+	if len(os.Args) != 3 {
 		panic("usage: github-approve-deps <owner> <repo>")
 	}
 
 	c := scm.NewGithubClient(http.DefaultClient, os.Getenv("USER_GITHUB_TOKEN"))
-	updates, err := c.GetDependencyUpdates(ctx, scm.DependencyUpdateQuery{
-		Owner: os.Args[0],
-		Repo:  os.Args[1],
-	})
+	u := scm.DependencyUpdateQuery{
+		Owner: os.Args[1],
+		Repo:  os.Args[2],
+	}
+	updates, err := c.GetDependencyUpdates(ctx, u)
 	if err != nil {
 		panic(err)
 	}
