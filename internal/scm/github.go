@@ -2,10 +2,11 @@ package scm
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 
-	"github.com/google/go-github/v56/github"
+	"github.com/google/go-github/v65/github"
 )
 
 const (
@@ -31,10 +32,19 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 		excluded[p] = true
 	}
 
-	pulls, _, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{})
+	// need to iterate throught the list
+	pulls, resp, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{
+		Base: "main",
+		ListOptions: github.ListOptions{
+			Page:    0,
+			PerPage: 100,
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Println(resp)
 
 	for _, p := range pulls {
 		// exclude excluded PRs
@@ -42,12 +52,20 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 			continue
 		}
 
-		if *p.User.ID == dependabotUserID {
-			reqs = append(reqs, DependencyUpdateRequest{
-				Owner:             q.Owner,
-				Repo:              q.Repo,
-				PullRequestNumber: *p.Number,
-			})
+		if p.GetUser().GetID() == dependabotUserID {
+			// determine which are passing
+			status, _, sErr := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
+			if sErr != nil {
+				return nil, sErr
+			}
+
+			if status.GetState() == "success" {
+				reqs = append(reqs, DependencyUpdateRequest{
+					Owner:             q.Owner,
+					Repo:              q.Repo,
+					PullRequestNumber: p.GetNumber(),
+				})
+			}
 		}
 	}
 
