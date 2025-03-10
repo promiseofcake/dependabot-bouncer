@@ -20,13 +20,19 @@ func main() {
 		Owner: os.Args[1],
 		Repo:  os.Args[2],
 	}
-	updates, err := c.GetDependencyUpdates(ctx, u)
+
+	fn := c.ApprovePullRequests
+	skipFailing := true
+
+	// fn := c.RecreatePullRequests
+	// skipFailing := false
+
+	updates, err := c.GetDependencyUpdates(ctx, u, skipFailing)
 	if err != nil {
 		panic(err)
 	}
 
-	err = c.ApprovePullRequests(ctx, updates)
-	//err = c.RecreatePullRequests(ctx, updates)
+	err = fn(ctx, updates)
 	if err != nil {
 		panic(err)
 	}
