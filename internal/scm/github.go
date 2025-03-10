@@ -23,7 +23,7 @@ func NewGithubClient(client *http.Client, token string) *githubClient {
 	}
 }
 
-func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpdateQuery) ([]DependencyUpdateRequest, error) {
+func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpdateQuery, skipFailing bool) ([]DependencyUpdateRequest, error) {
 
 	var reqs []DependencyUpdateRequest
 
@@ -52,14 +52,23 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 			continue
 		}
 
-		if p.GetUser().GetID() == dependabotUserID {
-			// determine which are passing
-			status, _, sErr := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
-			if sErr != nil {
-				return nil, sErr
-			}
+		if skipFailing {
+			if p.GetUser().GetID() == dependabotUserID {
+				status, _, sErr := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
+				if sErr != nil {
+					return nil, sErr
+				}
 
-			if status.GetState() == "success" {
+				if status.GetState() == "success" {
+					reqs = append(reqs, DependencyUpdateRequest{
+						Owner:             q.Owner,
+						Repo:              q.Repo,
+						PullRequestNumber: p.GetNumber(),
+					})
+				}
+			}
+		} else {
+			if p.GetUser().GetID() == dependabotUserID {
 				reqs = append(reqs, DependencyUpdateRequest{
 					Owner:             q.Owner,
 					Repo:              q.Repo,
@@ -86,6 +95,26 @@ func (g *githubClient) ApprovePullRequests(ctx context.Context, reqs []Dependenc
 			Body:  &approveMessage,
 			Event: &approveEvent,
 		})
+		if err != nil {
+			panic(err)
+		}
+		log.Printf("%d: request: %s, result: %s\n", r.PullRequestNumber, request, review)
+	}
+
+	return nil
+}
+
+func (g *githubClient) RebasePullRequests(ctx context.Context, reqs []DependencyUpdateRequest) error {
+	recreateMessage := `@dependabot rebase`
+	recreateEvent := `COMMENT`
+
+	for _, r := range reqs {
+		request := &github.PullRequestReviewRequest{
+			Body:  &recreateMessage,
+			Event: &recreateEvent,
+		}
+
+		review, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, request)
 		if err != nil {
 			panic(err)
 		}
