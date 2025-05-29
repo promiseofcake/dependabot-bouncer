@@ -1,6 +1,6 @@
 # github-deps
 
-A command-line tool to manage GitHub dependency updates, supporting both approve and recreate modes for Dependabot initiaiated pull requests.
+A command-line tool to manage GitHub dependency updates, supporting both approve and recreate modes for Dependabot initiated pull requests.
 
 ## Installation
 
