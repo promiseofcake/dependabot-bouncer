@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"net/http"
 	"os"
 
@@ -11,23 +13,38 @@ import (
 func main() {
 	ctx := context.Background()
 
-	if len(os.Args) != 3 {
-		panic("usage: github-approve-deps <owner> <repo>")
+	owner := flag.String("owner", "", "GitHub organization or user (required)")
+	repo := flag.String("repo", "", "GitHub repository name (required)")
+	recreate := flag.Bool("recreate", false, "Whether to recreate PRs instead of approving")
+	skipFailing := flag.Bool("skip-failing", true, "Whether to skip processing failing PRS (ci failures)")
+	flag.Parse()
+
+	if *owner == "" || *repo == "" {
+		fmt.Fprintln(os.Stderr, "error: --owner and --repo are required")
+		flag.Usage()
+		os.Exit(1)
 	}
 
-	c := scm.NewGithubClient(http.DefaultClient, os.Getenv("USER_GITHUB_TOKEN"))
+	token := os.Getenv("USER_GITHUB_TOKEN")
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "error: USER_GITHUB_TOKEN must be set in environment")
+		os.Exit(1)
+	}
+
+	c := scm.NewGithubClient(http.DefaultClient, token)
 	u := scm.DependencyUpdateQuery{
-		Owner: os.Args[1],
-		Repo:  os.Args[2],
+		Owner: *owner,
+		Repo:  *repo,
 	}
 
-	fn := c.ApprovePullRequests
-	skipFailing := true
+	var fn func(context.Context, []scm.DependencyUpdateRequest) error
+	if *recreate {
+		fn = c.RecreatePullRequests
+	} else {
+		fn = c.ApprovePullRequests
+	}
 
-	// fn := c.RecreatePullRequests
-	// skipFailing := false
-
-	updates, err := c.GetDependencyUpdates(ctx, u, skipFailing)
+	updates, err := c.GetDependencyUpdates(ctx, u, *skipFailing)
 	if err != nil {
 		panic(err)
 	}
