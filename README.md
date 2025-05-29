@@ -19,13 +19,10 @@ export USER_GITHUB_TOKEN=your_github_token
 ### Basic Usage
 
 ```bash
-# Approve all passing dependency updates
+# Approve all passing dependency updates (skips failing ones)
 github-approve-deps --owner=organization --repo=repository
 
-# Approve all updates, including failing ones
-github-approve-deps --owner=organization --repo=repository --skip-failing=false
-
-# Recreate all dependency updates
+# Recreate all dependency updates (includes failing ones)
 github-approve-deps --owner=organization --repo=repository --recreate
 ```
 
@@ -34,7 +31,6 @@ github-approve-deps --owner=organization --repo=repository --recreate
 - `--owner`: GitHub organization or user (required)
 - `--repo`: GitHub repository name (required)
 - `--recreate`: Whether to recreate PRs instead of approving (default: false)
-- `--skip-failing`: Whether to skip processing failing PRs (CI failures) (default: true)
 
 ## Examples
 
@@ -43,5 +39,5 @@ github-approve-deps --owner=organization --repo=repository --recreate
 github-approve-deps --owner=promiseofcake --repo=github-deps
 
 # Recreate all updates, including failing ones
-github-approve-deps --owner=promiseofcake --repo=github-deps --recreate --skip-failing=false
+github-approve-deps --owner=promiseofcake --repo=github-deps --recreate
 ```

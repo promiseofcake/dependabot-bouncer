@@ -16,7 +16,6 @@ func main() {
 	owner := flag.String("owner", "", "GitHub organization or user (required)")
 	repo := flag.String("repo", "", "GitHub repository name (required)")
 	recreate := flag.Bool("recreate", false, "Whether to recreate PRs instead of approving")
-	skipFailing := flag.Bool("skip-failing", true, "Whether to skip processing failing PRS (ci failures)")
 	flag.Parse()
 
 	if *owner == "" || *repo == "" {
@@ -38,13 +37,16 @@ func main() {
 	}
 
 	var fn func(context.Context, []scm.DependencyUpdateRequest) error
+	var skipFailing bool
 	if *recreate {
 		fn = c.RecreatePullRequests
+		skipFailing = false // Never skip failing for recreate
 	} else {
 		fn = c.ApprovePullRequests
+		skipFailing = true // Always skip failing for approve
 	}
 
-	updates, err := c.GetDependencyUpdates(ctx, u, *skipFailing)
+	updates, err := c.GetDependencyUpdates(ctx, u, skipFailing)
 	if err != nil {
 		panic(err)
 	}
