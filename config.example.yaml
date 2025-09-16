@@ -1,0 +1,31 @@
+# GitHub Dependencies Manager Configuration
+# Place this file at ~/.github-deps/config.yaml
+#
+# This file uses Viper configuration format.
+# Command-line flags override these settings.
+
+# GitHub token (can also use USER_GITHUB_TOKEN env var)
+# github-token: your-token-here
+
+# Global settings apply to all repositories
+global:
+  # Packages to deny across all repositories
+  denied_packages:
+
+  # Organizations to deny across all repositories
+  denied_orgs:
+    - datadog          # Example: breaks often
+
+# Repository-specific configurations
+# Format: owner/repo
+repositories:
+  # Example configuration for a specific repository
+  myorg/frontend-app:
+    denied_packages:
+      - bootstrap@3     # Old version of Bootstrap
+      - angular         # This is a React project
+    denied_orgs:
+      - analytics-corp  # Using different analytics provider
+    ignored_prs:
+      - 123            # PR with known issues
+      - 456            # Waiting for manual review

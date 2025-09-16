@@ -1,58 +1,79 @@
 package main
 
 import (
-	"context"
-	"flag"
 	"fmt"
-	"net/http"
 	"os"
+	"path/filepath"
 
-	"github.com/promiseofcake/github-deps/internal/scm"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
-func main() {
-	ctx := context.Background()
+var (
+	cfgFile string
+	rootCmd = &cobra.Command{
+		Use:   "github-approve-deps",
+		Short: "Manage GitHub dependency updates",
+		Long: `A tool to manage GitHub dependency updates from Dependabot.
 
-	owner := flag.String("owner", "", "GitHub organization or user (required)")
-	repo := flag.String("repo", "", "GitHub repository name (required)")
-	recreate := flag.Bool("recreate", false, "Whether to recreate PRs instead of approving")
-	flag.Parse()
-
-	if *owner == "" || *repo == "" {
-		fmt.Fprintln(os.Stderr, "error: --owner and --repo are required")
-		flag.Usage()
-		os.Exit(1)
+Supports both approve and recreate modes with flexible deny lists for
+packages and organizations. Configuration can be provided via YAML file
+or command-line flags.`,
 	}
+)
 
-	token := os.Getenv("USER_GITHUB_TOKEN")
-	if token == "" {
-		fmt.Fprintln(os.Stderr, "error: USER_GITHUB_TOKEN must be set in environment")
-		os.Exit(1)
-	}
+func init() {
+	cobra.OnInitialize(initConfig)
 
-	c := scm.NewGithubClient(http.DefaultClient, token)
-	u := scm.DependencyUpdateQuery{
-		Owner: *owner,
-		Repo:  *repo,
-	}
+	// Global flags
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.github-deps/config.yaml)")
+	rootCmd.PersistentFlags().String("github-token", "", "GitHub token (defaults to USER_GITHUB_TOKEN env var)")
+	rootCmd.PersistentFlags().StringSlice("deny-packages", []string{}, "Packages to deny")
+	rootCmd.PersistentFlags().StringSlice("deny-orgs", []string{}, "Organizations to deny")
 
-	var fn func(context.Context, []scm.DependencyUpdateRequest) error
-	var skipFailing bool
-	if *recreate {
-		fn = c.RecreatePullRequests
-		skipFailing = false // Never skip failing for recreate
+	// Bind flags to viper
+	viper.BindPFlag("github-token", rootCmd.PersistentFlags().Lookup("github-token"))
+	viper.BindPFlag("deny-packages", rootCmd.PersistentFlags().Lookup("deny-packages"))
+	viper.BindPFlag("deny-orgs", rootCmd.PersistentFlags().Lookup("deny-orgs"))
+
+	// Add subcommands
+	rootCmd.AddCommand(approveCmd, recreateCmd)
+}
+
+func initConfig() {
+	if cfgFile != "" {
+		// Use config file from the flag
+		viper.SetConfigFile(cfgFile)
 	} else {
-		fn = c.ApprovePullRequests
-		skipFailing = true // Always skip failing for approve
+		// Find home directory
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		// Search for config in home directory
+		viper.AddConfigPath(filepath.Join(home, ".github-deps"))
+		viper.SetConfigType("yaml")
+		viper.SetConfigName("config")
 	}
 
-	updates, err := c.GetDependencyUpdates(ctx, u, skipFailing)
-	if err != nil {
-		panic(err)
-	}
+	// Bind environment variables
+	viper.SetEnvPrefix("GITHUB_DEPS")
+	viper.AutomaticEnv()
 
-	err = fn(ctx, updates)
-	if err != nil {
-		panic(err)
+	// Also check for USER_GITHUB_TOKEN specifically
+	viper.BindEnv("github-token", "USER_GITHUB_TOKEN")
+
+	// Read config file if it exists
+	if err := viper.ReadInConfig(); err == nil {
+		fmt.Println("Using config file:", viper.ConfigFileUsed())
+	}
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
