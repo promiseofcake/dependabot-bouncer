@@ -26,7 +26,7 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	// Global flags
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.github-deps/config.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.github-approve-deps/config.yaml)")
 	rootCmd.PersistentFlags().String("github-token", "", "GitHub token (defaults to USER_GITHUB_TOKEN env var)")
 	rootCmd.PersistentFlags().StringSlice("deny-packages", []string{}, "Packages to deny")
 	rootCmd.PersistentFlags().StringSlice("deny-orgs", []string{}, "Organizations to deny")
@@ -37,7 +37,7 @@ func init() {
 	viper.BindPFlag("deny-orgs", rootCmd.PersistentFlags().Lookup("deny-orgs"))
 
 	// Add subcommands
-	rootCmd.AddCommand(approveCmd, recreateCmd)
+	rootCmd.AddCommand(approveCmd, recreateCmd, checkCmd)
 }
 
 func initConfig() {
@@ -53,7 +53,7 @@ func initConfig() {
 		}
 
 		// Search for config in home directory
-		viper.AddConfigPath(filepath.Join(home, ".github-deps"))
+		viper.AddConfigPath(filepath.Join(home, ".github-approve-deps"))
 		viper.SetConfigType("yaml")
 		viper.SetConfigName("config")
 	}
