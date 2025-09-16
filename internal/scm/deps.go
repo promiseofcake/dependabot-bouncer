@@ -15,3 +15,13 @@ type DependencyUpdateRequest struct {
 	Title             string // PR title for logging
 	PackageName       string // Extracted package name
 }
+
+// PRInfo contains information about a pull request
+type PRInfo struct {
+	Number      int
+	Title       string
+	URL         string
+	Status      string // CI status: "success", "failure", "pending", or ""
+	Skipped     bool   // Whether PR would be skipped due to deny lists
+	SkipReason  string // Reason for skipping (denied package/org name)
+}

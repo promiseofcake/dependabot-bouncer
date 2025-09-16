@@ -36,12 +36,16 @@ func extractPackageInfo(title string) (packageName string, orgName string) {
 		regex    *regexp.Regexp
 		pkgIndex int
 	}{
+		// "⬆️ (deps): Bump package from x to y" or "⬆️ (deps): bump package from x to y"
+		{regexp.MustCompile(`(?i)⬆️\s+\(deps\):\s+[Bb]ump\s+([^\s]+)\s+(?:from|to)`), 1},
+		// "⬆️ (deps): Bump the aws-sdk-go-v2 group with N updates"
+		{regexp.MustCompile(`(?i)⬆️\s+\(deps\):\s+[Bb]ump\s+the\s+([^\s]+)\s+group`), 1},
 		// "Bump package from x to y" or "Bump package to y"
-		{regexp.MustCompile(`(?i)^bump\s+([^\s]+)\s+(?:from|to)`), 1},
+		{regexp.MustCompile(`(?i)^[Bb]ump\s+([^\s]+)\s+(?:from|to)`), 1},
 		// "Update package from x to y" or "Update package to y"
-		{regexp.MustCompile(`(?i)^update\s+([^\s]+)\s+(?:from|to)`), 1},
+		{regexp.MustCompile(`(?i)^[Uu]pdate\s+([^\s]+)\s+(?:from|to)`), 1},
 		// "chore(deps): bump package from x to y"
-		{regexp.MustCompile(`(?i)^chore.*bump\s+([^\s]+)\s+(?:from|to)`), 1},
+		{regexp.MustCompile(`(?i)^chore.*[Bb]ump\s+([^\s]+)\s+(?:from|to)`), 1},
 	}
 
 	for _, p := range patterns {
@@ -70,13 +74,35 @@ func extractPackageInfo(title string) (packageName string, orgName string) {
 			parts := strings.Split(packageName, "/")
 			orgName = strings.TrimPrefix(parts[0], "@")
 		} else if strings.Contains(packageName, "/") {
-			// Handle GitHub-style packages like github.com/datadog/datadog-go
-			parts := strings.Split(packageName, "/")
-			for i, part := range parts {
-				// Look for organization name (usually after domain)
-				if i > 0 && !strings.Contains(part, ".") {
-					orgName = part
-					break
+			// Special case for golang.org/x and google.golang.org packages - they don't have an org
+			if strings.HasPrefix(packageName, "golang.org/x/") || strings.HasPrefix(packageName, "google.golang.org/") {
+				orgName = ""
+			} else if strings.HasPrefix(packageName, "gopkg.in/") {
+				// gopkg.in packages can have orgs like gopkg.in/DataDog/dd-trace-go.v1
+				// Extract the org from the second part if it exists
+				parts := strings.Split(packageName, "/")
+				if len(parts) > 2 {
+					// gopkg.in/DataDog/dd-trace-go.v1 -> DataDog
+					orgName = strings.ToLower(parts[1])
+				} else {
+					orgName = ""
+				}
+			} else {
+				// Handle GitHub-style packages like github.com/datadog/datadog-go
+				parts := strings.Split(packageName, "/")
+				// For github.com/owner/repo or github.com/owner/repo/v2
+				// We want the owner (second part)
+				if len(parts) >= 3 && strings.HasPrefix(packageName, "github.com/") {
+					orgName = parts[1]
+				} else {
+					// Fallback for other patterns
+					for i, part := range parts {
+						// Skip domain parts and version indicators
+						if i > 0 && !strings.Contains(part, ".") && !strings.HasPrefix(part, "v") {
+							orgName = part
+							break
+						}
+					}
 				}
 			}
 		}
@@ -89,12 +115,60 @@ func extractPackageInfo(title string) (packageName string, orgName string) {
 func isDenied(packageName, orgName string, deniedPackages, deniedOrgs []string) bool {
 	// Check if package is denied
 	for _, denied := range deniedPackages {
+		// Handle wildcard patterns
+		if strings.Contains(denied, "*") {
+			// Convert wildcard pattern to simple matching
+			pattern := strings.ToLower(denied)
+			pkg := strings.ToLower(packageName)
+
+			// Simple wildcard matching
+			if pattern == "*alpha*" && strings.Contains(pkg, "alpha") {
+				return true
+			}
+			if pattern == "*beta*" && strings.Contains(pkg, "beta") {
+				return true
+			}
+			if pattern == "*rc*" && strings.Contains(pkg, "rc") {
+				return true
+			}
+			if pattern == "*/v0" && strings.HasSuffix(pkg, "/v0") {
+				return true
+			}
+			continue
+		}
+
+		// Exact match (case insensitive)
 		if strings.EqualFold(packageName, denied) {
 			return true
 		}
-		// Also check if the denied string is contained in the package name
-		if strings.Contains(strings.ToLower(packageName), strings.ToLower(denied)) {
-			return true
+
+		// Check if it's a partial match (for versioned denials like github.com/gin-gonic/gin@v1)
+		// But don't match if the denied package is a substring of a different package
+		// e.g., don't match aws-sdk-go-v2 when aws-sdk-go is denied
+		if strings.Contains(denied, "@") {
+			// Version-specific denial
+			if strings.Contains(strings.ToLower(packageName), strings.ToLower(denied)) {
+				return true
+			}
+		} else {
+			// For non-versioned denials, check for exact package name match
+			// This prevents aws-sdk-go from matching aws-sdk-go-v2
+			deniedLower := strings.ToLower(denied)
+			pkgLower := strings.ToLower(packageName)
+
+			// Check if they're the same package (not just a substring)
+			if pkgLower == deniedLower {
+				return true
+			}
+
+			// Also check with common version suffixes removed for comparison
+			// This allows "github.com/gin-gonic/gin@v1.7.0" to match "github.com/gin-gonic/gin@v1"
+			if idx := strings.Index(pkgLower, "@"); idx > 0 {
+				pkgBase := pkgLower[:idx]
+				if pkgBase == deniedLower {
+					return true
+				}
+			}
 		}
 	}
 
@@ -254,4 +328,104 @@ func (g *githubClient) RecreatePullRequests(ctx context.Context, reqs []Dependen
 	}
 
 	return nil
+}
+
+// GetDependabotPRs returns all open Dependabot PRs for a repository
+func (g *githubClient) GetDependabotPRs(ctx context.Context, owner, repo string) ([]PRInfo, error) {
+	var prs []PRInfo
+
+	// List all open PRs
+	pulls, _, err := g.client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
+		State: "open",
+		ListOptions: github.ListOptions{
+			Page:    0,
+			PerPage: 100,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, p := range pulls {
+		// Only include Dependabot PRs
+		if p.GetUser().GetID() == dependabotUserID {
+			pr := PRInfo{
+				Number: p.GetNumber(),
+				Title:  p.GetTitle(),
+				URL:    p.GetHTMLURL(),
+			}
+
+			// Get CI status
+			status, _, err := g.client.Repositories.GetCombinedStatus(ctx, owner, repo, p.GetHead().GetSHA(), &github.ListOptions{})
+			if err == nil {
+				pr.Status = status.GetState()
+			}
+
+			prs = append(prs, pr)
+		}
+	}
+
+	return prs, nil
+}
+
+// GetDependabotPRsWithDenyList returns all open Dependabot PRs with skip status based on deny lists
+func (g *githubClient) GetDependabotPRsWithDenyList(ctx context.Context, q DependencyUpdateQuery) ([]PRInfo, error) {
+	var prs []PRInfo
+
+	// List all open PRs
+	pulls, _, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{
+		State: "open",
+		ListOptions: github.ListOptions{
+			Page:    0,
+			PerPage: 100,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, p := range pulls {
+		// Only include Dependabot PRs
+		if p.GetUser().GetID() == dependabotUserID {
+			title := p.GetTitle()
+			packageName, orgName := extractPackageInfo(title)
+
+			pr := PRInfo{
+				Number: p.GetNumber(),
+				Title:  title,
+				URL:    p.GetHTMLURL(),
+			}
+
+			// Check if package or org is denied
+			if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
+				pr.Skipped = true
+				if orgName != "" {
+					for _, denied := range q.DeniedOrgs {
+						if strings.EqualFold(orgName, denied) {
+							pr.SkipReason = fmt.Sprintf("org '%s' is denied", orgName)
+							break
+						}
+					}
+				}
+				if pr.SkipReason == "" && packageName != "" {
+					for _, denied := range q.DeniedPackages {
+						if strings.EqualFold(packageName, denied) || strings.Contains(strings.ToLower(packageName), strings.ToLower(denied)) {
+							pr.SkipReason = fmt.Sprintf("package '%s' is denied", denied)
+							break
+						}
+					}
+				}
+			}
+
+			// Get CI status
+			status, _, err := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
+			if err == nil {
+				pr.Status = status.GetState()
+			}
+
+			prs = append(prs, pr)
+		}
+	}
+
+	return prs, nil
 }

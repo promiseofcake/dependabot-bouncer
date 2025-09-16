@@ -1,5 +1,5 @@
 # GitHub Dependencies Manager Configuration
-# Place this file at ~/.github-deps/config.yaml
+# Place this file at ~/.github-approve-deps/config.yaml
 #
 # This file uses Viper configuration format.
 # Command-line flags override these settings.
@@ -11,21 +11,43 @@
 global:
   # Packages to deny across all repositories
   denied_packages:
+    - github.com/pkg/errors         # Deprecated, use stdlib errors with %w
+    - github.com/dgrijalva/jwt-go   # Unmaintained, use github.com/golang-jwt/jwt
+    - github.com/gorilla/mux        # Prefer chi or stdlib net/http
+    - gopkg.in/mgo.v2               # Unmaintained MongoDB driver
+    - github.com/sirupsen/logrus    # Prefer zerolog or zap for performance
+    - github.com/go-kit/kit         # Prefer lighter weight alternatives
 
   # Organizations to deny across all repositories
   denied_orgs:
-    - datadog          # Example: breaks often
+    - datadog          # Expensive monitoring, prefer OpenTelemetry
+    - elastic          # Prefer OpenSearch alternatives
+    - newrelic         # Expensive APM solution
 
-# Repository-specific configurations
-# Format: owner/repo
+# Repository configurations
+# Each repository listed here will be:
+# - Checked by the 'check' command (if no args provided)
+# - Can have specific deny lists and ignored PRs
+# - Inherits global deny lists (in addition to repo-specific ones)
 repositories:
-  # Example configuration for a specific repository
-  myorg/frontend-app:
+  # Repositories to monitor (can be empty {} for just tracking)
+  myorg/user-service: {}
+
+  # Repository with specific configuration
+  myorg/legacy-api:
     denied_packages:
-      - bootstrap@3     # Old version of Bootstrap
-      - angular         # This is a React project
+      - github.com/aws/aws-sdk-go     # Use v2 instead
+      - golang.org/x/net              # Pin to specific version
     denied_orgs:
-      - analytics-corp  # Using different analytics provider
+      - hashicorp      # Licensing concerns with some packages
     ignored_prs:
-      - 123            # PR with known issues
+      - 123            # Breaking change, needs migration
       - 456            # Waiting for manual review
+
+  # Another example with minimal config
+  myorg/production-service:
+    denied_packages:
+      - "*alpha*"                     # No alpha versions
+      - "*beta*"                      # No beta versions
+      - "*rc*"                        # No release candidates
+      - "*/v0"                        # No v0 packages in production
