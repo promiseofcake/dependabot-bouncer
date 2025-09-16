@@ -19,6 +19,7 @@ go install github.com/promiseofcake/github-deps/cmd/github-approve-deps@latest
 ## Usage
 
 The tool requires a GitHub token with appropriate permissions. You can provide it via:
+
 - Environment variable: `export USER_GITHUB_TOKEN=your_github_token`
 - Command-line flag: `--github-token=your_token`
 - Config file: `github-token: your_token`
