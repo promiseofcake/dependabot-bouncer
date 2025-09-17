@@ -1,4 +1,4 @@
-# github-deps
+# dependabot-bouncer
 
 A command-line tool to manage GitHub dependency updates, supporting both approve and recreate modes for Dependabot initiated pull requests.
 
@@ -13,7 +13,7 @@ A command-line tool to manage GitHub dependency updates, supporting both approve
 ## Installation
 
 ```bash
-go install github.com/promiseofcake/github-deps/cmd/github-approve-deps@latest
+go install github.com/promiseofcake/dependabot-bouncer/cmd/github-approve-deps@latest
 ```
 
 ## Usage
@@ -152,6 +152,6 @@ All deny lists are merged (not replaced), so command-line flags add to the confi
 ### Configuration
 
 - Uses Viper for configuration management
-- Automatically loads from `~/.github-deps/config.yaml`
+- Automatically loads from `~/.dependabot-bouncer/config.yaml`
 - Supports environment variables with `GITHUB_DEPS_` prefix
 - Command-line flags take precedence over config file

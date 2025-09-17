@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/promiseofcake/github-deps/internal/scm"
+	"github.com/promiseofcake/dependabot-bouncer/internal/scm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
