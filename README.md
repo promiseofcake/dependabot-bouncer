@@ -136,6 +136,12 @@ All deny lists are merged (not replaced), so command-line flags add to the confi
 
 ## Behavior
 
+- Uses Viper for configuration management
+- Automatically loads from `~/.dependabot-bouncer/config.yaml`
+- Supports environment variables with `DEPENDABOT_BOUNCER_` prefix
+- Command-line flags take precedence over config file
+
+
 ### Command Modes
 
 - **approve**: Only processes PRs with passing CI checks
@@ -148,10 +154,3 @@ All deny lists are merged (not replaced), so command-line flags add to the confi
   - NPM scoped: `@datadog/browser-rum` → `datadog`
   - GitHub: `github.com/datadog/datadog-go` → `datadog`
 - All denied packages and organizations are skipped with a log message
-
-### Configuration
-
-- Uses Viper for configuration management
-- Automatically loads from `~/.dependabot-bouncer/config.yaml`
-- Supports environment variables with `DEPENDABOT_BOUNCER_` prefix
-- Command-line flags take precedence over config file
