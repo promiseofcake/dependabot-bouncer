@@ -1,0 +1,26 @@
+name: Go
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Build all cmd tools
+        run: |
+          for dir in cmd/*/; do
+            echo "Building $dir"
+            go build -v ./$dir
+          done
+      - name: Test with the Go CLI
+        run: go test -v ./...
