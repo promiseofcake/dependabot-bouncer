@@ -1,4 +1,4 @@
-module github.com/promiseofcake/github-deps
+module github.com/promiseofcake/dependabot-bouncer
 
 go 1.24
 

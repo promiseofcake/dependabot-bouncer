@@ -1,5 +1,5 @@
 # GitHub Dependencies Manager Configuration
-# Place this file at ~/.github-approve-deps/config.yaml
+# Place this file at ~/.dependabot-bouncer/config.yaml
 #
 # This file uses Viper configuration format.
 # Command-line flags override these settings.

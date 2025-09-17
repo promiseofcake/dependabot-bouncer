@@ -12,7 +12,7 @@ import (
 var (
 	cfgFile string
 	rootCmd = &cobra.Command{
-		Use:   "github-approve-deps",
+		Use:   "dependabot-bouncer",
 		Short: "Manage GitHub dependency updates",
 		Long: `A tool to manage GitHub dependency updates from Dependabot.
 
@@ -26,7 +26,7 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	// Global flags
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.github-approve-deps/config.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.dependabot-bouncer/config.yaml)")
 	rootCmd.PersistentFlags().String("github-token", "", "GitHub token (defaults to USER_GITHUB_TOKEN env var)")
 	rootCmd.PersistentFlags().StringSlice("deny-packages", []string{}, "Packages to deny")
 	rootCmd.PersistentFlags().StringSlice("deny-orgs", []string{}, "Organizations to deny")
@@ -53,13 +53,13 @@ func initConfig() {
 		}
 
 		// Search for config in home directory
-		viper.AddConfigPath(filepath.Join(home, ".github-approve-deps"))
+		viper.AddConfigPath(filepath.Join(home, ".dependabot-bouncer"))
 		viper.SetConfigType("yaml")
 		viper.SetConfigName("config")
 	}
 
 	// Bind environment variables
-	viper.SetEnvPrefix("GITHUB_DEPS")
+	viper.SetEnvPrefix("DEPENDABOT_BOUNCER")
 	viper.AutomaticEnv()
 
 	// Also check for USER_GITHUB_TOKEN specifically
