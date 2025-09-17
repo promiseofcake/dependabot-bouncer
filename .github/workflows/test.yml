@@ -16,8 +16,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-      - name: Install dependencies
-        run: go get .
       - name: Build all cmd tools
         run: |
           for dir in cmd/*/; do
