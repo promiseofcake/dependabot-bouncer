@@ -59,7 +59,7 @@ func initConfig() {
 	}
 
 	// Bind environment variables
-	viper.SetEnvPrefix("GITHUB_DEPS")
+	viper.SetEnvPrefix("DEPENDABOT_BOUNCER")
 	viper.AutomaticEnv()
 
 	// Also check for USER_GITHUB_TOKEN specifically

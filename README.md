@@ -153,5 +153,5 @@ All deny lists are merged (not replaced), so command-line flags add to the confi
 
 - Uses Viper for configuration management
 - Automatically loads from `~/.dependabot-bouncer/config.yaml`
-- Supports environment variables with `GITHUB_DEPS_` prefix
+- Supports environment variables with `DEPENDABOT_BOUNCER_` prefix
 - Command-line flags take precedence over config file
