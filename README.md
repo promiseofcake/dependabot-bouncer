@@ -13,7 +13,7 @@ A command-line tool to manage GitHub dependency updates, supporting both approve
 ## Installation
 
 ```bash
-go install github.com/promiseofcake/dependabot-bouncer/cmd/github-approve-deps@latest
+go install github.com/promiseofcake/dependabot-bouncer/cmd/dependabot-bouncer@latest
 ```
 
 ## Usage
@@ -28,23 +28,23 @@ The tool requires a GitHub token with appropriate permissions. You can provide i
 
 ```bash
 # Approve passing dependency updates
-github-approve-deps approve owner/repo
+dependabot-bouncer approve owner/repo
 
 # Recreate all dependency updates (including failing ones)
-github-approve-deps recreate owner/repo
+dependabot-bouncer recreate owner/repo
 
 # Check for open Dependabot PRs across multiple repositories
-github-approve-deps check
-github-approve-deps check owner1/repo1 owner2/repo2
+dependabot-bouncer check
+dependabot-bouncer check owner1/repo1 owner2/repo2
 
 # Show help
-github-approve-deps --help
-github-approve-deps approve --help
+dependabot-bouncer --help
+dependabot-bouncer approve --help
 ```
 
 ### Global Flags
 
-- `--config`: Path to config file (default: `~/.github-approve-deps/config.yaml`)
+- `--config`: Path to config file (default: `~/.dependabot-bouncer/config.yaml`)
 - `--github-token`: GitHub token (overrides env var and config)
 - `--deny-packages`: Additional packages to deny (can be used multiple times)
 - `--deny-orgs`: Additional organizations to deny (can be used multiple times)
@@ -53,33 +53,33 @@ github-approve-deps approve --help
 
 ```bash
 # Approve all passing updates
-github-approve-deps approve myorg/user-service
+dependabot-bouncer approve myorg/user-service
 
 # Recreate all updates (including failing ones)
-github-approve-deps recreate myorg/payment-api
+dependabot-bouncer recreate myorg/payment-api
 
 # Check multiple repositories for Dependabot PRs
-github-approve-deps check myorg/user-service myorg/payment-api myorg/gateway-service
+dependabot-bouncer check myorg/user-service myorg/payment-api myorg/gateway-service
 
 # Check repositories from config file
-github-approve-deps check
+dependabot-bouncer check
 
 # Deny specific packages via command line
-github-approve-deps approve myorg/user-service \
+dependabot-bouncer approve myorg/user-service \
   --deny-packages github.com/pkg/errors \
   --deny-packages gopkg.in/mgo.v2
 
 # Deny organizations
-github-approve-deps approve myorg/payment-api \
+dependabot-bouncer approve myorg/payment-api \
   --deny-orgs datadog \
   --deny-orgs elastic
 
 # Use custom config file
-github-approve-deps approve myorg/user-service \
+dependabot-bouncer approve myorg/user-service \
   --config ./my-config.yaml
 
 # Override token for one-off use
-github-approve-deps approve myorg/payment-api \
+dependabot-bouncer approve myorg/payment-api \
   --github-token ghp_differenttoken
 ```
 
@@ -87,7 +87,7 @@ github-approve-deps approve myorg/payment-api \
 
 ### Configuration File
 
-The tool supports a YAML configuration file at `~/.github-approve-deps/config.yaml` for persistent settings.
+The tool supports a YAML configuration file at `~/.dependabot-bouncer/config.yaml` for persistent settings.
 
 **Example configuration:**
 
