@@ -18,8 +18,6 @@ jobs:
           go-version: '1.24'
       - name: Install dependencies
         run: go get .
-      - name: Build
-        run: go build -v ./...
       - name: Build all cmd tools
         run: |
           for dir in cmd/*/; do
