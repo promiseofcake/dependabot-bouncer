@@ -1,6 +1,6 @@
 module github.com/promiseofcake/dependabot-bouncer
 
-go 1.24
+go 1.25
 
 require (
 	github.com/google/go-github/v72 v72.0.0
