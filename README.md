@@ -5,6 +5,7 @@ A command-line tool to manage GitHub dependency updates, supporting both approve
 ## Features
 
 - Automatically approve or recreate Dependabot pull requests
+- Close stale PRs with specific labels based on age
 - Flexible deny lists for packages and organizations
 - YAML-based configuration file support
 - Per-repository configuration overrides
@@ -36,6 +37,10 @@ dependabot-bouncer recreate owner/repo
 # Check for open Dependabot PRs across multiple repositories
 dependabot-bouncer check
 dependabot-bouncer check owner1/repo1 owner2/repo2
+
+# Close old PRs with a specific label
+dependabot-bouncer close owner/repo --older-than 720h
+dependabot-bouncer close owner/repo --older-than 720h --dry-run
 
 # Show help
 dependabot-bouncer --help
@@ -81,6 +86,15 @@ dependabot-bouncer approve myorg/user-service \
 # Override token for one-off use
 dependabot-bouncer approve myorg/payment-api \
   --github-token ghp_differenttoken
+
+# Close PRs with "dependencies" label older than 30 days
+dependabot-bouncer close myorg/user-service --older-than 720h
+
+# Close PRs older than 6 months (dry run first)
+dependabot-bouncer close myorg/user-service --older-than 4320h --dry-run
+
+# Close PRs with a different label
+dependabot-bouncer close myorg/user-service --older-than 720h --label stale
 ```
 
 ## Configuration
@@ -146,6 +160,24 @@ All deny lists are merged (not replaced), so command-line flags add to the confi
 
 - **approve**: Only processes PRs with passing CI checks
 - **recreate**: Processes all PRs, including those with failing CI
+- **close**: Closes PRs matching a label that are older than a specified duration
+
+### Close Command
+
+The `close` command helps clean up stale dependency PRs by closing those older than a specified duration.
+
+**Flags:**
+- `--older-than`: Required. Duration threshold using Go's `time.Duration` format
+- `--label`: Label to filter PRs by (default: `dependencies`)
+- `--dry-run`: Preview which PRs would be closed without closing them
+
+**Duration reference:**
+| Duration | Value |
+|----------|-------|
+| 30 days  | `720h` |
+| 90 days  | `2160h` |
+| 6 months | `4320h` |
+| 1 year   | `8760h` |
 
 ### Package Filtering
 

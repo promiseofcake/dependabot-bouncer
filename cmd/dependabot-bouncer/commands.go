@@ -52,7 +52,41 @@ configured in the 'repositories' section of your config file.
 You can specify multiple repositories: check owner1/repo1 owner2/repo2`,
 		RunE: runCheck,
 	}
+
+	closeCmd = &cobra.Command{
+		Use:   "close owner/repo",
+		Short: "Close old PRs with the dependencies label",
+		Long: `Close pull requests that have the 'dependencies' label and are older than
+the specified maximum age.
+
+Duration format uses Go's standard time.Duration parsing:
+  - Hours: 720h (30 days), 4320h (6 months), 8760h (1 year)
+  - Minutes: 43200m (30 days)
+  - Combined: 720h30m
+
+Examples:
+  dependabot-bouncer close owner/repo --older-than 720h
+  dependabot-bouncer close owner/repo --older-than 4320h --label dependencies
+  dependabot-bouncer close owner/repo --older-than 2160h --dry-run`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			parts := strings.Split(args[0], "/")
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid repository format: %s (expected owner/repo)", args[0])
+			}
+			return runClose(parts[0], parts[1])
+		},
+	}
 )
+
+func init() {
+	closeCmd.Flags().Duration("older-than", 0, "Close PRs older than this duration (e.g., 720h for 30 days)")
+	closeCmd.Flags().String("label", "dependencies", "Label to filter PRs by")
+	closeCmd.Flags().Bool("dry-run", false, "Show PRs that would be closed without closing them")
+	viper.BindPFlag("older-than", closeCmd.Flags().Lookup("older-than"))
+	viper.BindPFlag("label", closeCmd.Flags().Lookup("label"))
+	viper.BindPFlag("dry-run", closeCmd.Flags().Lookup("dry-run"))
+}
 
 func runCheck(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
@@ -274,4 +308,59 @@ func removeDuplicates(slice []string) []string {
 	}
 
 	return result
+}
+
+func runClose(owner, repo string) error {
+	ctx := context.Background()
+
+	// Get GitHub token
+	token := viper.GetString("github-token")
+	if token == "" {
+		return fmt.Errorf("GitHub token not provided. Use --github-token flag or set USER_GITHUB_TOKEN environment variable")
+	}
+
+	// Get command options
+	olderThan := viper.GetDuration("older-than")
+	if olderThan == 0 {
+		return fmt.Errorf("--older-than flag is required (e.g., 720h for 30 days, 4320h for 6 months)")
+	}
+
+	label := viper.GetString("label")
+	dryRun := viper.GetBool("dry-run")
+
+	// Create GitHub client
+	c := scm.NewGithubClient(http.DefaultClient, token)
+
+	// Get old PRs matching criteria
+	prs, err := c.GetOldLabeledPRs(ctx, owner, repo, label, olderThan)
+	if err != nil {
+		return fmt.Errorf("failed to get old PRs: %w", err)
+	}
+
+	if len(prs) == 0 {
+		fmt.Printf("No PRs found with label '%s' older than %s\n", label, olderThan)
+		return nil
+	}
+
+	// Display PRs to be closed
+	fmt.Printf("Found %d PR(s) with label '%s' older than %s:\n\n", len(prs), label, olderThan)
+	for _, pr := range prs {
+		fmt.Printf("  #%d: %s\n", pr.Number, pr.Title)
+		fmt.Printf("       Created: %s (age: %s)\n", pr.CreatedAt, pr.Age)
+		fmt.Printf("       %s\n\n", pr.URL)
+	}
+
+	if dryRun {
+		fmt.Println("Dry run mode - no PRs were closed")
+		return nil
+	}
+
+	// Close the PRs
+	fmt.Printf("Closing %d PR(s)...\n", len(prs))
+	if err := c.ClosePullRequests(ctx, owner, repo, prs); err != nil {
+		return fmt.Errorf("failed to close PRs: %w", err)
+	}
+
+	fmt.Printf("Successfully closed %d PR(s)\n", len(prs))
+	return nil
 }

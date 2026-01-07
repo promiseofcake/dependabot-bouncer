@@ -37,7 +37,7 @@ func init() {
 	viper.BindPFlag("deny-orgs", rootCmd.PersistentFlags().Lookup("deny-orgs"))
 
 	// Add subcommands
-	rootCmd.AddCommand(approveCmd, recreateCmd, checkCmd)
+	rootCmd.AddCommand(approveCmd, recreateCmd, checkCmd, closeCmd)
 }
 
 func initConfig() {
