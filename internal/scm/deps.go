@@ -25,3 +25,12 @@ type PRInfo struct {
 	Skipped     bool   // Whether PR would be skipped due to deny lists
 	SkipReason  string // Reason for skipping (denied package/org name)
 }
+
+// ClosePRInfo contains information about a PR to be closed
+type ClosePRInfo struct {
+	Number    int
+	Title     string
+	URL       string
+	CreatedAt string
+	Age       string
+}

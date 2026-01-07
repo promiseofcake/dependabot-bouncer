@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v72/github"
 )
@@ -428,4 +429,132 @@ func (g *githubClient) GetDependabotPRsWithDenyList(ctx context.Context, q Depen
 	}
 
 	return prs, nil
+}
+
+// GetOldLabeledPRs returns PRs with a specific label that are older than the specified duration
+func (g *githubClient) GetOldLabeledPRs(ctx context.Context, owner, repo, label string, maxAge time.Duration) ([]ClosePRInfo, error) {
+	var prs []ClosePRInfo
+
+	cutoff := time.Now().Add(-maxAge)
+
+	opts := &github.PullRequestListOptions{
+		State: "open",
+		ListOptions: github.ListOptions{
+			Page:    1,
+			PerPage: 100,
+		},
+	}
+
+	for {
+		pulls, resp, err := g.client.PullRequests.List(ctx, owner, repo, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, p := range pulls {
+			// Check if PR has the required label
+			hasLabel := false
+			for _, l := range p.Labels {
+				if strings.EqualFold(l.GetName(), label) {
+					hasLabel = true
+					break
+				}
+			}
+
+			if !hasLabel {
+				continue
+			}
+
+			// Check if PR is older than the cutoff
+			createdAt := p.GetCreatedAt().Time
+			if createdAt.After(cutoff) {
+				continue
+			}
+
+			age := time.Since(createdAt)
+			ageStr := formatDuration(age)
+
+			prs = append(prs, ClosePRInfo{
+				Number:    p.GetNumber(),
+				Title:     p.GetTitle(),
+				URL:       p.GetHTMLURL(),
+				CreatedAt: createdAt.Format("2006-01-02"),
+				Age:       ageStr,
+			})
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return prs, nil
+}
+
+// ClosePullRequests closes the given pull requests with a comment
+func (g *githubClient) ClosePullRequests(ctx context.Context, owner, repo string, prs []ClosePRInfo) error {
+	state := "closed"
+	comment := "Closed due to inactivity."
+
+	for _, pr := range prs {
+		// Add comment explaining why the PR is being closed
+		_, _, err := g.client.Issues.CreateComment(ctx, owner, repo, pr.Number, &github.IssueComment{
+			Body: &comment,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to comment on PR #%d: %w", pr.Number, err)
+		}
+
+		// Close the PR
+		_, _, err = g.client.PullRequests.Edit(ctx, owner, repo, pr.Number, &github.PullRequest{
+			State: &state,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to close PR #%d: %w", pr.Number, err)
+		}
+		log.Printf("Closed PR #%d: %s (age: %s)\n", pr.Number, pr.Title, pr.Age)
+	}
+
+	return nil
+}
+
+// formatDuration formats a duration in a human-readable way
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	if days >= 365 {
+		years := days / 365
+		if years == 1 {
+			return "1 year"
+		}
+		return fmt.Sprintf("%d years", years)
+	}
+	if days >= 30 {
+		months := days / 30
+		if months == 1 {
+			return "1 month"
+		}
+		return fmt.Sprintf("%d months", months)
+	}
+	if days >= 7 {
+		weeks := days / 7
+		if weeks == 1 {
+			return "1 week"
+		}
+		return fmt.Sprintf("%d weeks", weeks)
+	}
+	if days >= 1 {
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	}
+	hours := int(d.Hours())
+	if hours >= 1 {
+		if hours == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", hours)
+	}
+	return "less than 1 hour"
 }

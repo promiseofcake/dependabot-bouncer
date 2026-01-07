@@ -37,7 +37,15 @@ func init() {
 	viper.BindPFlag("deny-orgs", rootCmd.PersistentFlags().Lookup("deny-orgs"))
 
 	// Add subcommands
-	rootCmd.AddCommand(approveCmd, recreateCmd, checkCmd)
+	rootCmd.AddCommand(approveCmd, recreateCmd, checkCmd, closeCmd)
+
+	// Close command flags
+	closeCmd.Flags().Duration("older-than", 0, "Close PRs older than this duration (e.g., 720h for 30 days)")
+	closeCmd.Flags().String("label", "dependencies", "Label to filter PRs by")
+	closeCmd.Flags().Bool("dry-run", false, "Show PRs that would be closed without closing them")
+	viper.BindPFlag("older-than", closeCmd.Flags().Lookup("older-than"))
+	viper.BindPFlag("label", closeCmd.Flags().Lookup("label"))
+	viper.BindPFlag("dry-run", closeCmd.Flags().Lookup("dry-run"))
 }
 
 func initConfig() {
