@@ -25,19 +25,14 @@ or command-line flags.`,
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.dependabot-bouncer/config.yaml)")
-	rootCmd.PersistentFlags().String("github-token", "", "GitHub token (defaults to USER_GITHUB_TOKEN env var, falls back to 'gh auth token')")
 	rootCmd.PersistentFlags().StringSlice("deny-packages", []string{}, "Packages to deny")
 	rootCmd.PersistentFlags().StringSlice("deny-orgs", []string{}, "Organizations to deny")
 
-	// Bind flags to viper
-	viper.BindPFlag("github-token", rootCmd.PersistentFlags().Lookup("github-token"))
 	viper.BindPFlag("deny-packages", rootCmd.PersistentFlags().Lookup("deny-packages"))
 	viper.BindPFlag("deny-orgs", rootCmd.PersistentFlags().Lookup("deny-orgs"))
 
-	// Add subcommands
-	rootCmd.AddCommand(approveCmd, recreateCmd, checkCmd, closeCmd)
+	rootCmd.AddCommand(approveCmd, recreateCmd, checkCmd)
 }
 
 func initConfig() {
@@ -61,9 +56,6 @@ func initConfig() {
 	// Bind environment variables
 	viper.SetEnvPrefix("DEPENDABOT_BOUNCER")
 	viper.AutomaticEnv()
-
-	// Also check for USER_GITHUB_TOKEN specifically
-	viper.BindEnv("github-token", "USER_GITHUB_TOKEN")
 
 	// Read config file if it exists
 	if err := viper.ReadInConfig(); err == nil {

@@ -1,24 +1,14 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"log"
-	"net/http"
-	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/promiseofcake/dependabot-bouncer/internal/scm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
-
-// httpClient returns an HTTP client with a reasonable timeout for GitHub API calls.
-func httpClient() *http.Client {
-	return &http.Client{Timeout: 30 * time.Second}
-}
 
 // parseRepo splits an "owner/repo" string into its parts.
 func parseRepo(arg string) (owner, repo string, err error) {
@@ -51,7 +41,7 @@ var (
 			if err != nil {
 				return err
 			}
-			return runDependencyUpdate(owner, repo, false)
+			return runApprove(owner, repo)
 		},
 	}
 
@@ -65,7 +55,7 @@ var (
 			if err != nil {
 				return err
 			}
-			return runDependencyUpdate(owner, repo, true)
+			return runRecreate(owner, repo)
 		},
 	}
 
@@ -80,65 +70,78 @@ configured in the 'repositories' section of your config file.
 You can specify multiple repositories: check owner1/repo1 owner2/repo2`,
 		RunE: runCheck,
 	}
-
-	closeCmd = &cobra.Command{
-		Use:   "close owner/repo",
-		Short: "Close old PRs with the dependencies label",
-		Long: `Close pull requests that have the 'dependencies' label and are older than
-the specified maximum age.
-
-Duration format uses Go's standard time.Duration parsing:
-  - Hours: 720h (30 days), 4320h (6 months), 8760h (1 year)
-  - Minutes: 43200m (30 days)
-  - Combined: 720h30m
-
-Examples:
-  dependabot-bouncer close owner/repo --older-than 720h
-  dependabot-bouncer close owner/repo --older-than 4320h --label dependencies
-  dependabot-bouncer close owner/repo --older-than 2160h --dry-run`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			owner, repo, err := parseRepo(args[0])
-			if err != nil {
-				return err
-			}
-			return runClose(owner, repo)
-		},
-	}
 )
 
-func init() {
-	closeCmd.Flags().Duration("older-than", 0, "Close PRs older than this duration (e.g., 720h for 30 days)")
-	closeCmd.Flags().String("label", "dependencies", "Label to filter PRs by")
-	closeCmd.Flags().Bool("dry-run", false, "Show PRs that would be closed without closing them")
-	viper.BindPFlag("older-than", closeCmd.Flags().Lookup("older-than"))
-	viper.BindPFlag("label", closeCmd.Flags().Lookup("label"))
-	viper.BindPFlag("dry-run", closeCmd.Flags().Lookup("dry-run"))
-}
-
-func runCheck(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
-
-	// Get GitHub token
-	token, err := resolveGitHubToken()
+func runApprove(owner, repo string) error {
+	prs, err := listFilteredPRs(owner, repo, true)
 	if err != nil {
 		return err
 	}
+	if len(prs) == 0 {
+		fmt.Println("No dependency updates to process")
+		return nil
+	}
 
-	// Get list of repositories to check
+	fmt.Printf("Processing %d pull requests...\n", len(prs))
+
+	for _, pr := range prs {
+		if err := scm.ApprovePR(owner, repo, pr.Number); err != nil {
+			log.Printf("Warning: failed to approve PR #%d: %v\n", pr.Number, err)
+			continue
+		}
+		log.Printf("Approved PR #%d: %s (package: %s)\n", pr.Number, pr.Title, pr.PackageName)
+
+		if pr.MergeStateStatus == "BEHIND" {
+			if err := scm.RebasePR(owner, repo, pr.Number); err != nil {
+				log.Printf("Warning: failed to rebase PR #%d: %v\n", pr.Number, err)
+			} else {
+				log.Printf("Requested rebase on PR #%d (behind main): %s\n", pr.Number, pr.Title)
+			}
+		}
+
+		if err := scm.AutoMergePR(owner, repo, pr.Number); err != nil {
+			log.Printf("Warning: failed to enable auto-merge on PR #%d: %v\n", pr.Number, err)
+		} else {
+			log.Printf("Enabled auto-merge on PR #%d: %s\n", pr.Number, pr.Title)
+		}
+	}
+
+	return nil
+}
+
+func runRecreate(owner, repo string) error {
+	prs, err := listFilteredPRs(owner, repo, false)
+	if err != nil {
+		return err
+	}
+	if len(prs) == 0 {
+		fmt.Println("No dependency updates to process")
+		return nil
+	}
+
+	fmt.Printf("Processing %d pull requests...\n", len(prs))
+
+	for _, pr := range prs {
+		if err := scm.RecreatePR(owner, repo, pr.Number); err != nil {
+			log.Printf("Warning: failed to recreate PR #%d: %v\n", pr.Number, err)
+		} else {
+			log.Printf("Recreated PR #%d: %s (package: %s)\n", pr.Number, pr.Title, pr.PackageName)
+		}
+	}
+
+	return nil
+}
+
+func runCheck(cmd *cobra.Command, args []string) error {
 	var repos []string
 
 	if len(args) > 0 {
-		// Use command-line arguments
 		repos = args
 	} else {
-		// Get all configured repositories from the main config
 		repoMap := viper.GetStringMap("repositories")
 		for repo := range repoMap {
 			repos = append(repos, repo)
 		}
-
-		// If no repositories in main config, check for legacy check.repositories
 		if len(repos) == 0 {
 			repos = viper.GetStringSlice("check.repositories")
 		}
@@ -148,20 +151,17 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no repositories specified. Use command-line arguments or configure repositories in config file")
 	}
 
-	// Create GitHub client
-	c := scm.NewGithubClient(httpClient(), token)
-
-	fmt.Println("📦 Open Dependabot PRs:")
+	fmt.Println("Open Dependabot PRs:")
 	fmt.Println("-------------------------")
 
 	for _, repoPath := range repos {
 		owner, repo, pErr := parseRepo(repoPath)
 		if pErr != nil {
-			fmt.Printf("⚠️  %v\n\n", pErr)
+			fmt.Printf("  Invalid: %v\n\n", pErr)
 			continue
 		}
 
-		fmt.Printf("🔍 %s/%s\n", owner, repo)
+		fmt.Printf("%s/%s\n", owner, repo)
 
 		repoKey := fmt.Sprintf("%s/%s", owner, repo)
 		deniedPackages, deniedOrgs := buildDenyLists(repoKey)
@@ -173,10 +173,9 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			DeniedOrgs:     deniedOrgs,
 		}
 
-		// Get open Dependabot PRs with deny list info
-		prs, err := c.GetDependabotPRsWithDenyList(ctx, q)
+		prs, err := scm.ListDependabotPRs(q, false)
 		if err != nil {
-			fmt.Printf("   ❌ Error: %v\n\n", err)
+			fmt.Printf("   Error: %v\n\n", err)
 			continue
 		}
 
@@ -184,22 +183,12 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			fmt.Println("   (no open Dependabot PRs)")
 		} else {
 			for _, pr := range prs {
+				fmt.Printf("   #%d: %s\n", pr.Number, pr.Title)
+				fmt.Printf("   %s\n", pr.URL)
 				if pr.Skipped {
-					fmt.Printf("   #%d: %s\n", pr.Number, pr.Title)
-					fmt.Printf("   %s\n", pr.URL)
-					fmt.Printf("   Status: 🚫 SKIPPED (%s)\n", pr.SkipReason)
-				} else {
-					fmt.Printf("   #%d: %s\n", pr.Number, pr.Title)
-					fmt.Printf("   %s\n", pr.URL)
-					if pr.Status != "" {
-						statusIcon := "⏳"
-						if pr.Status == "success" {
-							statusIcon = "✅"
-						} else if pr.Status == "failure" {
-							statusIcon = "❌"
-						}
-						fmt.Printf("   Status: %s %s\n", statusIcon, pr.Status)
-					}
+					fmt.Printf("   Status: SKIPPED (%s)\n", pr.SkipReason)
+				} else if pr.CIStatus != "" {
+					fmt.Printf("   Status: %s\n", pr.CIStatus)
 				}
 				fmt.Println()
 			}
@@ -210,20 +199,12 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDependencyUpdate(owner, repo string, recreate bool) error {
-	ctx := context.Background()
-
-	// Get GitHub token
-	token, err := resolveGitHubToken()
-	if err != nil {
-		return err
-	}
-
+// listFilteredPRs builds a query from config and returns filtered Dependabot PRs.
+func listFilteredPRs(owner, repo string, skipFailing bool) ([]scm.PRInfo, error) {
 	repoKey := fmt.Sprintf("%s/%s", owner, repo)
 	deniedPackages, deniedOrgs := buildDenyLists(repoKey)
 	ignoredPRs := getIntSlice("repositories." + repoKey + ".ignored_prs")
 
-	// Add command-line overrides
 	if cmdPackages := viper.GetStringSlice("deny-packages"); len(cmdPackages) > 0 {
 		deniedPackages = removeDuplicates(append(deniedPackages, cmdPackages...))
 	}
@@ -231,7 +212,6 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 		deniedOrgs = removeDuplicates(append(deniedOrgs, cmdOrgs...))
 	}
 
-	// Log what we're doing
 	if len(deniedPackages) > 0 {
 		log.Printf("Denying packages: %v\n", deniedPackages)
 	}
@@ -242,8 +222,6 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 		log.Printf("Ignoring PRs: %v\n", ignoredPRs)
 	}
 
-	// Create GitHub client
-	c := scm.NewGithubClient(httpClient(), token)
 	q := scm.DependencyUpdateQuery{
 		Owner:          owner,
 		Repo:           repo,
@@ -252,89 +230,7 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 		DeniedOrgs:     deniedOrgs,
 	}
 
-	// Determine skip failing behavior
-	skipFailing := !recreate // Approve mode skips failing, recreate mode doesn't
-
-	// Get dependency updates
-	updates, err := c.GetDependencyUpdates(ctx, q, skipFailing)
-	if err != nil {
-		return fmt.Errorf("failed to get dependency updates: %w", err)
-	}
-
-	if len(updates) == 0 {
-		fmt.Println("No dependency updates to process")
-		return nil
-	}
-
-	// Execute the appropriate action
-	fmt.Printf("Processing %d pull requests...\n", len(updates))
-
-	if recreate {
-		err = c.RecreatePullRequests(ctx, updates)
-		if err != nil {
-			return fmt.Errorf("failed to process pull requests: %w", err)
-		}
-	} else {
-		err = c.ApprovePullRequests(ctx, updates)
-		if err != nil {
-			return fmt.Errorf("failed to approve pull requests: %w", err)
-		}
-
-		// For each approved PR: enable auto-merge, merge directly if clean, or rebase if behind
-		for _, u := range updates {
-			state, sErr := c.GetPRMergeableState(ctx, u)
-			if sErr != nil {
-				log.Printf("Warning: could not get mergeable state for PR #%d: %v\n", u.PullRequestNumber, sErr)
-			}
-
-			if state == "behind" {
-				// PR is behind main — tell dependabot to rebase, then enable auto-merge
-				if rErr := c.RebasePullRequest(ctx, u); rErr != nil {
-					log.Printf("Warning: failed to rebase PR #%d: %v\n", u.PullRequestNumber, rErr)
-				} else {
-					log.Printf("Requested rebase on PR #%d (behind main): %s\n", u.PullRequestNumber, u.Title)
-				}
-			}
-
-			if amErr := c.EnableAutoMerge(ctx, scm.GraphQLURL, u); amErr != nil {
-				if errors.Is(amErr, scm.ErrPRClean) {
-					if mErr := c.MergePullRequest(ctx, u); mErr != nil {
-						log.Printf("Warning: failed to merge clean PR #%d: %v\n", u.PullRequestNumber, mErr)
-					} else {
-						log.Printf("Merged PR #%d (already clean): %s\n", u.PullRequestNumber, u.Title)
-					}
-				} else {
-					log.Printf("Warning: failed to enable auto-merge on PR #%d: %v\n", u.PullRequestNumber, amErr)
-				}
-			} else {
-				log.Printf("Enabled auto-merge on PR #%d: %s\n", u.PullRequestNumber, u.Title)
-			}
-		}
-	}
-
-	return nil
-}
-
-// resolveGitHubToken returns the GitHub token from config/env, falling back to `gh auth token`.
-func resolveGitHubToken() (string, error) {
-	token := viper.GetString("github-token")
-	var ghErr error
-	if token == "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output(); err == nil {
-			token = strings.TrimSpace(string(out))
-		} else {
-			ghErr = err
-		}
-	}
-	if token == "" {
-		if ghErr != nil {
-			return "", fmt.Errorf("GitHub token not found (gh auth token failed: %v). Either run 'gh auth login' or set --github-token flag / USER_GITHUB_TOKEN environment variable", ghErr)
-		}
-		return "", fmt.Errorf("GitHub token not found. Either run 'gh auth login' or set --github-token flag / USER_GITHUB_TOKEN environment variable")
-	}
-	return token, nil
+	return scm.ListDependabotPRs(q, skipFailing)
 }
 
 // Helper functions
@@ -355,7 +251,7 @@ func getIntSlice(key string) []int {
 
 func removeDuplicates(slice []string) []string {
 	seen := make(map[string]bool)
-	result := []string{}
+	var result []string
 
 	for _, item := range slice {
 		normalized := strings.ToLower(strings.TrimSpace(item))
@@ -366,59 +262,4 @@ func removeDuplicates(slice []string) []string {
 	}
 
 	return result
-}
-
-func runClose(owner, repo string) error {
-	ctx := context.Background()
-
-	// Get GitHub token
-	token, err := resolveGitHubToken()
-	if err != nil {
-		return err
-	}
-
-	// Get command options
-	olderThan := viper.GetDuration("older-than")
-	if olderThan == 0 {
-		return fmt.Errorf("--older-than flag is required (e.g., 720h for 30 days, 4320h for 6 months)")
-	}
-
-	label := viper.GetString("label")
-	dryRun := viper.GetBool("dry-run")
-
-	// Create GitHub client
-	c := scm.NewGithubClient(httpClient(), token)
-
-	// Get old PRs matching criteria
-	prs, err := c.GetOldLabeledPRs(ctx, owner, repo, label, olderThan)
-	if err != nil {
-		return fmt.Errorf("failed to get old PRs: %w", err)
-	}
-
-	if len(prs) == 0 {
-		fmt.Printf("No PRs found with label '%s' older than %s\n", label, olderThan)
-		return nil
-	}
-
-	// Display PRs to be closed
-	fmt.Printf("Found %d PR(s) with label '%s' older than %s:\n\n", len(prs), label, olderThan)
-	for _, pr := range prs {
-		fmt.Printf("  #%d: %s\n", pr.Number, pr.Title)
-		fmt.Printf("       Created: %s (age: %s)\n", pr.CreatedAt, pr.Age)
-		fmt.Printf("       %s\n\n", pr.URL)
-	}
-
-	if dryRun {
-		fmt.Println("Dry run mode - no PRs were closed")
-		return nil
-	}
-
-	// Close the PRs
-	fmt.Printf("Closing %d PR(s)...\n", len(prs))
-	if err := c.ClosePullRequests(ctx, owner, repo, prs); err != nil {
-		return fmt.Errorf("failed to close PRs: %w", err)
-	}
-
-	fmt.Printf("Successfully closed %d PR(s)\n", len(prs))
-	return nil
 }
