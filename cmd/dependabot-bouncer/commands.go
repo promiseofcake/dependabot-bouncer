@@ -14,6 +14,11 @@ import (
 	"github.com/spf13/viper"
 )
 
+// httpClient returns an HTTP client with a reasonable timeout for GitHub API calls.
+func httpClient() *http.Client {
+	return &http.Client{Timeout: 30 * time.Second}
+}
+
 var (
 	approveCmd = &cobra.Command{
 		Use:   "approve owner/repo",
@@ -123,7 +128,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create GitHub client
-	c := scm.NewGithubClient(http.DefaultClient, token)
+	c := scm.NewGithubClient(httpClient(), token)
 
 	fmt.Println("📦 Open Dependabot PRs:")
 	fmt.Println("-------------------------")
@@ -242,7 +247,7 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 	}
 
 	// Create GitHub client
-	c := scm.NewGithubClient(http.DefaultClient, token)
+	c := scm.NewGithubClient(httpClient(), token)
 	q := scm.DependencyUpdateQuery{
 		Owner:          owner,
 		Repo:           repo,
@@ -281,10 +286,7 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 
 		// Enable auto-merge on each approved PR
 		for _, u := range updates {
-			amCtx, amCancel := context.WithTimeout(ctx, 10*time.Second)
-			amErr := c.EnableAutoMerge(amCtx, scm.GraphQLURL, u)
-			amCancel()
-			if amErr != nil {
+			if amErr := c.EnableAutoMerge(ctx, scm.GraphQLURL, u); amErr != nil {
 				log.Printf("Warning: failed to enable auto-merge on PR #%d: %v\n", u.PullRequestNumber, amErr)
 			} else {
 				log.Printf("Enabled auto-merge on PR #%d: %s\n", u.PullRequestNumber, u.Title)
@@ -367,7 +369,7 @@ func runClose(owner, repo string) error {
 	dryRun := viper.GetBool("dry-run")
 
 	// Create GitHub client
-	c := scm.NewGithubClient(http.DefaultClient, token)
+	c := scm.NewGithubClient(httpClient(), token)
 
 	// Get old PRs matching criteria
 	prs, err := c.GetOldLabeledPRs(ctx, owner, repo, label, olderThan)

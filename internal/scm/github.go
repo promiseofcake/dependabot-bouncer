@@ -199,7 +199,7 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 	}
 
 	// need to iterate throught the list
-	pulls, resp, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{
+	pulls, _, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{
 		Base: "main",
 		ListOptions: github.ListOptions{
 			Page:    0,
@@ -209,8 +209,6 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Println(resp)
 
 	for _, p := range pulls {
 		// exclude excluded PRs
