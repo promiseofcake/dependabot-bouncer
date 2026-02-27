@@ -19,6 +19,26 @@ func httpClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
+// parseRepo splits an "owner/repo" string into its parts.
+func parseRepo(arg string) (owner, repo string, err error) {
+	parts := strings.Split(arg, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid repository format: %s (expected owner/repo)", arg)
+	}
+	return parts[0], parts[1], nil
+}
+
+// buildDenyLists merges global and repo-specific deny lists from config.
+func buildDenyLists(repoKey string) (deniedPackages, deniedOrgs []string) {
+	deniedPackages = getStringSlice("global.denied_packages")
+	deniedOrgs = getStringSlice("global.denied_orgs")
+
+	deniedPackages = append(deniedPackages, getStringSlice("repositories."+repoKey+".denied_packages")...)
+	deniedOrgs = append(deniedOrgs, getStringSlice("repositories."+repoKey+".denied_orgs")...)
+
+	return removeDuplicates(deniedPackages), removeDuplicates(deniedOrgs)
+}
+
 var (
 	approveCmd = &cobra.Command{
 		Use:   "approve owner/repo",
@@ -26,11 +46,11 @@ var (
 		Long:  `Approve passing dependency update pull requests from Dependabot.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			parts := strings.Split(args[0], "/")
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid repository format: %s (expected owner/repo)", args[0])
+			owner, repo, err := parseRepo(args[0])
+			if err != nil {
+				return err
 			}
-			return runDependencyUpdate(parts[0], parts[1], false)
+			return runDependencyUpdate(owner, repo, false)
 		},
 	}
 
@@ -40,11 +60,11 @@ var (
 		Long:  `Recreate all dependency update pull requests from Dependabot (including failing ones).`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			parts := strings.Split(args[0], "/")
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid repository format: %s (expected owner/repo)", args[0])
+			owner, repo, err := parseRepo(args[0])
+			if err != nil {
+				return err
 			}
-			return runDependencyUpdate(parts[0], parts[1], true)
+			return runDependencyUpdate(owner, repo, true)
 		},
 	}
 
@@ -77,11 +97,11 @@ Examples:
   dependabot-bouncer close owner/repo --older-than 2160h --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			parts := strings.Split(args[0], "/")
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid repository format: %s (expected owner/repo)", args[0])
+			owner, repo, err := parseRepo(args[0])
+			if err != nil {
+				return err
 			}
-			return runClose(parts[0], parts[1])
+			return runClose(owner, repo)
 		},
 	}
 )
@@ -134,29 +154,16 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	fmt.Println("-------------------------")
 
 	for _, repoPath := range repos {
-		parts := strings.Split(repoPath, "/")
-		if len(parts) != 2 {
-			fmt.Printf("⚠️  Invalid repository format: %s (expected owner/repo)\n\n", repoPath)
+		owner, repo, pErr := parseRepo(repoPath)
+		if pErr != nil {
+			fmt.Printf("⚠️  %v\n\n", pErr)
 			continue
 		}
 
-		owner, repo := parts[0], parts[1]
 		fmt.Printf("🔍 %s/%s\n", owner, repo)
 
-		// Build query with deny lists
 		repoKey := fmt.Sprintf("%s/%s", owner, repo)
-
-		// Get deny lists - merge global and repo-specific
-		deniedPackages := getStringSlice("global.denied_packages")
-		deniedOrgs := getStringSlice("global.denied_orgs")
-
-		// Add repo-specific denies
-		deniedPackages = append(deniedPackages, getStringSlice("repositories."+repoKey+".denied_packages")...)
-		deniedOrgs = append(deniedOrgs, getStringSlice("repositories."+repoKey+".denied_orgs")...)
-
-		// Remove duplicates
-		deniedPackages = removeDuplicates(deniedPackages)
-		deniedOrgs = removeDuplicates(deniedOrgs)
+		deniedPackages, deniedOrgs := buildDenyLists(repoKey)
 
 		q := scm.DependencyUpdateQuery{
 			Owner:          owner,
@@ -211,29 +218,17 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 		return err
 	}
 
-	// Build the repository key for looking up repo-specific config
 	repoKey := fmt.Sprintf("%s/%s", owner, repo)
-
-	// Get deny lists - merge global and repo-specific
-	deniedPackages := getStringSlice("global.denied_packages")
-	deniedOrgs := getStringSlice("global.denied_orgs")
+	deniedPackages, deniedOrgs := buildDenyLists(repoKey)
 	ignoredPRs := getIntSlice("repositories." + repoKey + ".ignored_prs")
 
-	// Add repo-specific denies
-	deniedPackages = append(deniedPackages, getStringSlice("repositories."+repoKey+".denied_packages")...)
-	deniedOrgs = append(deniedOrgs, getStringSlice("repositories."+repoKey+".denied_orgs")...)
-
-	// Add command-line overrides (these take precedence)
+	// Add command-line overrides
 	if cmdPackages := viper.GetStringSlice("deny-packages"); len(cmdPackages) > 0 {
-		deniedPackages = append(deniedPackages, cmdPackages...)
+		deniedPackages = removeDuplicates(append(deniedPackages, cmdPackages...))
 	}
 	if cmdOrgs := viper.GetStringSlice("deny-orgs"); len(cmdOrgs) > 0 {
-		deniedOrgs = append(deniedOrgs, cmdOrgs...)
+		deniedOrgs = removeDuplicates(append(deniedOrgs, cmdOrgs...))
 	}
-
-	// Remove duplicates
-	deniedPackages = removeDuplicates(deniedPackages)
-	deniedOrgs = removeDuplicates(deniedOrgs)
 
 	// Log what we're doing
 	if len(deniedPackages) > 0 {

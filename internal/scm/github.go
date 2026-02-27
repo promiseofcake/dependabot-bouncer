@@ -17,6 +17,9 @@ import (
 
 const (
 	dependabotUserID int64 = 49699333
+
+	// GraphQLURL is the GitHub GraphQL API endpoint.
+	GraphQLURL = "https://api.github.com/graphql"
 )
 
 type githubClient struct {
@@ -198,7 +201,6 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 		excluded[p] = true
 	}
 
-	// need to iterate throught the list
 	pulls, _, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{
 		Base: "main",
 		ListOptions: github.ListOptions{
@@ -211,59 +213,40 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 	}
 
 	for _, p := range pulls {
-		// exclude excluded PRs
-		if _, ok := excluded[*p.Number]; ok {
+		if _, ok := excluded[p.GetNumber()]; ok {
+			continue
+		}
+
+		if p.GetUser().GetID() != dependabotUserID {
+			continue
+		}
+
+		title := p.GetTitle()
+		packageName, orgName := extractPackageInfo(title)
+
+		if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
+			log.Printf("Skipping denied package: %s (org: %s) - PR #%d: %s\n", packageName, orgName, p.GetNumber(), title)
 			continue
 		}
 
 		if skipFailing {
-			if p.GetUser().GetID() == dependabotUserID {
-				title := p.GetTitle()
-				packageName, orgName := extractPackageInfo(title)
-
-				// Check if package or org is denied
-				if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
-					log.Printf("Skipping denied package: %s (org: %s) - PR #%d: %s\n", packageName, orgName, p.GetNumber(), title)
-					continue
-				}
-
-				status, _, sErr := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
-				if sErr != nil {
-					return nil, sErr
-				}
-
-				if status.GetState() == "success" {
-					reqs = append(reqs, DependencyUpdateRequest{
-						Owner:             q.Owner,
-						Repo:              q.Repo,
-						PullRequestNumber: p.GetNumber(),
-						NodeID:            p.GetNodeID(),
-						Title:             title,
-						PackageName:       packageName,
-					})
-				}
+			status, _, sErr := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
+			if sErr != nil {
+				return nil, sErr
 			}
-		} else {
-			if p.GetUser().GetID() == dependabotUserID {
-				title := p.GetTitle()
-				packageName, orgName := extractPackageInfo(title)
-
-				// Check if package or org is denied
-				if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
-					log.Printf("Skipping denied package: %s (org: %s) - PR #%d: %s\n", packageName, orgName, p.GetNumber(), title)
-					continue
-				}
-
-				reqs = append(reqs, DependencyUpdateRequest{
-					Owner:             q.Owner,
-					Repo:              q.Repo,
-					PullRequestNumber: p.GetNumber(),
-					NodeID:            p.GetNodeID(),
-					Title:             title,
-					PackageName:       packageName,
-				})
+			if status.GetState() != "success" {
+				continue
 			}
 		}
+
+		reqs = append(reqs, DependencyUpdateRequest{
+			Owner:             q.Owner,
+			Repo:              q.Repo,
+			PullRequestNumber: p.GetNumber(),
+			NodeID:            p.GetNodeID(),
+			Title:             title,
+			PackageName:       packageName,
+		})
 	}
 
 	return reqs, nil
@@ -287,8 +270,6 @@ func (g *githubClient) ApprovePullRequests(ctx context.Context, reqs []Dependenc
 	return nil
 }
 
-const GraphQLURL = "https://api.github.com/graphql"
-
 // EnableAutoMerge enables auto-merge on a pull request using GitHub's GraphQL API.
 func (g *githubClient) EnableAutoMerge(ctx context.Context, graphqlEndpoint string, req DependencyUpdateRequest) error {
 	query := `mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
@@ -301,7 +282,7 @@ func (g *githubClient) EnableAutoMerge(ctx context.Context, graphqlEndpoint stri
 		}
 	}`
 
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"query": query,
 		"variables": map[string]string{
 			"pullRequestId": req.NodeID,
