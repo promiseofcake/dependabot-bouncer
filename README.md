@@ -25,6 +25,8 @@ The tool requires a GitHub token with appropriate permissions. You can provide i
 - Command-line flag: `--github-token=your_token`
 - Config file: `github-token: your_token`
 
+If no token is configured, the tool falls back to `gh auth token` (requires [GitHub CLI](https://cli.github.com/) with `gh auth login`).
+
 ### Commands
 
 ```bash
@@ -50,7 +52,7 @@ dependabot-bouncer approve --help
 ### Global Flags
 
 - `--config`: Path to config file (default: `~/.dependabot-bouncer/config.yaml`)
-- `--github-token`: GitHub token (overrides env var and config)
+- `--github-token`: GitHub token (overrides env var, config, and `gh auth token` fallback)
 - `--deny-packages`: Additional packages to deny (can be used multiple times)
 - `--deny-orgs`: Additional organizations to deny (can be used multiple times)
 

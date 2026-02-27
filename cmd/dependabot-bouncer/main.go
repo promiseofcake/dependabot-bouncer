@@ -27,7 +27,7 @@ func init() {
 
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.dependabot-bouncer/config.yaml)")
-	rootCmd.PersistentFlags().String("github-token", "", "GitHub token (defaults to USER_GITHUB_TOKEN env var)")
+	rootCmd.PersistentFlags().String("github-token", "", "GitHub token (defaults to USER_GITHUB_TOKEN env var, falls back to 'gh auth token')")
 	rootCmd.PersistentFlags().StringSlice("deny-packages", []string{}, "Packages to deny")
 	rootCmd.PersistentFlags().StringSlice("deny-orgs", []string{}, "Organizations to deny")
 

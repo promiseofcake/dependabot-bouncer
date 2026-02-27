@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/promiseofcake/dependabot-bouncer/internal/scm"
 	"github.com/spf13/cobra"
@@ -92,9 +94,9 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	// Get GitHub token
-	token := viper.GetString("github-token")
-	if token == "" {
-		return fmt.Errorf("GitHub token not provided. Use --github-token flag or set USER_GITHUB_TOKEN environment variable")
+	token, err := resolveGitHubToken()
+	if err != nil {
+		return err
 	}
 
 	// Get list of repositories to check
@@ -199,9 +201,9 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 	ctx := context.Background()
 
 	// Get GitHub token
-	token := viper.GetString("github-token")
-	if token == "" {
-		return fmt.Errorf("GitHub token not provided. Use --github-token flag or set USER_GITHUB_TOKEN environment variable")
+	token, err := resolveGitHubToken()
+	if err != nil {
+		return err
 	}
 
 	// Build the repository key for looking up repo-specific config
@@ -279,6 +281,28 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 	return nil
 }
 
+// resolveGitHubToken returns the GitHub token from config/env, falling back to `gh auth token`.
+func resolveGitHubToken() (string, error) {
+	token := viper.GetString("github-token")
+	var ghErr error
+	if token == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output(); err == nil {
+			token = strings.TrimSpace(string(out))
+		} else {
+			ghErr = err
+		}
+	}
+	if token == "" {
+		if ghErr != nil {
+			return "", fmt.Errorf("GitHub token not found (gh auth token failed: %v). Either run 'gh auth login' or set --github-token flag / USER_GITHUB_TOKEN environment variable", ghErr)
+		}
+		return "", fmt.Errorf("GitHub token not found. Either run 'gh auth login' or set --github-token flag / USER_GITHUB_TOKEN environment variable")
+	}
+	return token, nil
+}
+
 // Helper functions
 
 func getStringSlice(key string) []string {
@@ -314,9 +338,9 @@ func runClose(owner, repo string) error {
 	ctx := context.Background()
 
 	// Get GitHub token
-	token := viper.GetString("github-token")
-	if token == "" {
-		return fmt.Errorf("GitHub token not provided. Use --github-token flag or set USER_GITHUB_TOKEN environment variable")
+	token, err := resolveGitHubToken()
+	if err != nil {
+		return err
 	}
 
 	// Get command options
