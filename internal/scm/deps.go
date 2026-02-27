@@ -12,6 +12,7 @@ type DependencyUpdateRequest struct {
 	Owner             string
 	Repo              string
 	PullRequestNumber int
+	NodeID            string // GraphQL global ID for the PR
 	Title             string // PR title for logging
 	PackageName       string // Extracted package name
 }
