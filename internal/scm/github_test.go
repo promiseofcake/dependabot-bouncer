@@ -575,8 +575,13 @@ func TestEnableAutoMerge(t *testing.T) {
 					t.Errorf("expected Bearer test-token, got %s", r.Header.Get("Authorization"))
 				}
 
-				body, _ := io.ReadAll(r.Body)
-				json.Unmarshal(body, &receivedBody)
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("failed to read request body: %v", err)
+				}
+				if err := json.Unmarshal(body, &receivedBody); err != nil {
+					t.Fatalf("failed to unmarshal request body: %v", err)
+				}
 
 				w.WriteHeader(tt.responseStatus)
 				w.Write([]byte(tt.responseBody))

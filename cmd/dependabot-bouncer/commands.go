@@ -281,7 +281,10 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 
 		// Enable auto-merge on each approved PR
 		for _, u := range updates {
-			if amErr := c.EnableAutoMerge(ctx, scm.GraphQLURL, u); amErr != nil {
+			amCtx, amCancel := context.WithTimeout(ctx, 10*time.Second)
+			amErr := c.EnableAutoMerge(amCtx, scm.GraphQLURL, u)
+			amCancel()
+			if amErr != nil {
 				log.Printf("Warning: failed to enable auto-merge on PR #%d: %v\n", u.PullRequestNumber, amErr)
 			} else {
 				log.Printf("Enabled auto-merge on PR #%d: %s\n", u.PullRequestNumber, u.Title)
