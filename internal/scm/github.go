@@ -1,8 +1,11 @@
 package scm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -286,6 +289,71 @@ func (g *githubClient) ApprovePullRequests(ctx context.Context, reqs []Dependenc
 		log.Printf("Approved PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
 		_ = review
 		_ = request
+	}
+
+	return nil
+}
+
+const GraphQLURL = "https://api.github.com/graphql"
+
+// EnableAutoMerge enables auto-merge on a pull request using GitHub's GraphQL API.
+func (g *githubClient) EnableAutoMerge(ctx context.Context, graphqlEndpoint string, req DependencyUpdateRequest) error {
+	query := `mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
+		enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: $mergeMethod}) {
+			pullRequest {
+				autoMergeRequest {
+					enabledAt
+				}
+			}
+		}
+	}`
+
+	payload := map[string]interface{}{
+		"query": query,
+		"variables": map[string]string{
+			"pullRequestId": req.NodeID,
+			"mergeMethod":   "SQUASH",
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal GraphQL request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", graphqlEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+g.token)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("GraphQL request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GraphQL request returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Check for GraphQL-level errors
+	var result struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("GraphQL error: %s", result.Errors[0].Message)
 	}
 
 	return nil
