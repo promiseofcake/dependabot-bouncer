@@ -18,11 +18,13 @@ const (
 
 type githubClient struct {
 	client *github.Client
+	token  string
 }
 
 func NewGithubClient(client *http.Client, token string) *githubClient {
 	return &githubClient{
 		client: github.NewClient(client).WithAuthToken(token),
+		token:  token,
 	}
 }
 
@@ -232,6 +234,7 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 						Owner:             q.Owner,
 						Repo:              q.Repo,
 						PullRequestNumber: p.GetNumber(),
+						NodeID:            p.GetNodeID(),
 						Title:             title,
 						PackageName:       packageName,
 					})
@@ -252,6 +255,7 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 					Owner:             q.Owner,
 					Repo:              q.Repo,
 					PullRequestNumber: p.GetNumber(),
+					NodeID:            p.GetNodeID(),
 					Title:             title,
 					PackageName:       packageName,
 				})
