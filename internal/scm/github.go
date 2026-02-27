@@ -1,39 +1,118 @@
 package scm
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
+	"os/exec"
 	"regexp"
 	"strings"
-	"time"
-
-	"github.com/google/go-github/v72/github"
 )
 
-const (
-	dependabotUserID int64 = 49699333
-
-	// GraphQLURL is the GitHub GraphQL API endpoint.
-	GraphQLURL = "https://api.github.com/graphql"
-)
-
-type githubClient struct {
-	client     *github.Client
-	httpClient *http.Client
-	token      string
+// ghPR represents a pull request as returned by `gh pr list --json`.
+type ghPR struct {
+	Number           int    `json:"number"`
+	Title            string `json:"title"`
+	URL              string `json:"url"`
+	MergeStateStatus string `json:"mergeStateStatus"`
+	Author           struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	StatusCheckRollup []struct {
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+	} `json:"statusCheckRollup"`
 }
 
-func NewGithubClient(client *http.Client, token string) *githubClient {
-	return &githubClient{
-		client:     github.NewClient(client).WithAuthToken(token),
-		httpClient: client,
-		token:      token,
+// ListDependabotPRs lists open Dependabot PRs for the given repository,
+// applying the filters described in the query. When skipFailing is true,
+// only PRs whose CI status is "success" are returned.
+func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, error) {
+	cmd := exec.Command("gh", "pr", "list",
+		"--repo", q.Owner+"/"+q.Repo,
+		"--base", "main",
+		"--json", "number,title,url,author,mergeStateStatus,statusCheckRollup",
+		"--limit", "100",
+	)
+
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("gh pr list failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, fmt.Errorf("gh pr list failed: %w", err)
 	}
+
+	var ghPRs []ghPR
+	if err := json.Unmarshal(out, &ghPRs); err != nil {
+		return nil, fmt.Errorf("failed to parse gh output: %w", err)
+	}
+
+	excluded := make(map[int]bool, len(q.IgnoredPRs))
+	for _, n := range q.IgnoredPRs {
+		excluded[n] = true
+	}
+
+	var prs []PRInfo
+	for _, p := range ghPRs {
+		if excluded[p.Number] {
+			continue
+		}
+
+		if p.Author.Login != "app/dependabot" {
+			continue
+		}
+
+		packageName, orgName := extractPackageInfo(p.Title)
+
+		if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
+			log.Printf("Skipping denied package: %s (org: %s) - PR #%d: %s\n", packageName, orgName, p.Number, p.Title)
+			continue
+		}
+
+		status := ciStatus(p.StatusCheckRollup)
+
+		if skipFailing && status != "success" {
+			continue
+		}
+
+		prs = append(prs, PRInfo{
+			Number:           p.Number,
+			Title:            p.Title,
+			URL:              p.URL,
+			MergeStateStatus: p.MergeStateStatus,
+			CIStatus:         status,
+			PackageName:      packageName,
+		})
+	}
+
+	return prs, nil
+}
+
+// ciStatus determines the overall CI status from a statusCheckRollup.
+//
+// Returns "pending" if there are no checks or any check is still running,
+// "failure" if any check concluded with a non-success/skipped/neutral result,
+// and "success" otherwise.
+func ciStatus(checks []struct {
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}) string {
+	if len(checks) == 0 {
+		return "pending"
+	}
+	for _, c := range checks {
+		if c.Status != "COMPLETED" {
+			return "pending"
+		}
+		switch c.Conclusion {
+		case "SUCCESS", "SKIPPED", "NEUTRAL":
+			// ok
+		default:
+			return "failure"
+		}
+	}
+	return "success"
 }
 
 // extractPackageInfo extracts package name and organization from a Dependabot PR title
@@ -191,489 +270,4 @@ func isDenied(packageName, orgName string, deniedPackages, deniedOrgs []string) 
 	}
 
 	return false
-}
-
-// getCIState returns the combined CI state for a commit ref by checking both
-// the legacy commit status API and the check runs API. GitHub Actions only
-// reports via check runs, while other CI systems (CircleCI, Jenkins) use
-// commit statuses. We need both to get the full picture.
-//
-// Returns "success" only if all reported checks/statuses have succeeded and at
-// least one check or status exists. Returns "pending" if no CI data exists.
-func (g *githubClient) getCIState(ctx context.Context, owner, repo, ref string) (string, error) {
-	status, _, err := g.client.Repositories.GetCombinedStatus(ctx, owner, repo, ref, &github.ListOptions{})
-	if err != nil {
-		return "", err
-	}
-
-	// If there are commit statuses, use that result directly.
-	if status.GetTotalCount() > 0 {
-		return status.GetState(), nil
-	}
-
-	// No commit statuses — fall back to check runs (GitHub Actions).
-	checks, _, err := g.client.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, &github.ListCheckRunsOptions{
-		ListOptions: github.ListOptions{PerPage: 100},
-	})
-	if err != nil {
-		return "", err
-	}
-
-	if checks.GetTotal() == 0 {
-		return "pending", nil
-	}
-
-	for _, cr := range checks.CheckRuns {
-		if cr.GetStatus() != "completed" {
-			return "pending", nil
-		}
-		if cr.GetConclusion() != "success" && cr.GetConclusion() != "skipped" && cr.GetConclusion() != "neutral" {
-			return "failure", nil
-		}
-	}
-
-	return "success", nil
-}
-
-func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpdateQuery, skipFailing bool) ([]DependencyUpdateRequest, error) {
-	var reqs []DependencyUpdateRequest
-
-	excluded := make(map[int]bool)
-	for _, p := range q.IgnoredPRs {
-		excluded[p] = true
-	}
-
-	pulls, _, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{
-		Base: "main",
-		ListOptions: github.ListOptions{
-			Page:    0,
-			PerPage: 100,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	for _, p := range pulls {
-		if _, ok := excluded[p.GetNumber()]; ok {
-			continue
-		}
-
-		if p.GetUser().GetID() != dependabotUserID {
-			continue
-		}
-
-		title := p.GetTitle()
-		packageName, orgName := extractPackageInfo(title)
-
-		if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
-			log.Printf("Skipping denied package: %s (org: %s) - PR #%d: %s\n", packageName, orgName, p.GetNumber(), title)
-			continue
-		}
-
-		if skipFailing {
-			state, sErr := g.getCIState(ctx, q.Owner, q.Repo, p.GetHead().GetSHA())
-			if sErr != nil {
-				return nil, sErr
-			}
-			if state != "success" {
-				continue
-			}
-		}
-
-		reqs = append(reqs, DependencyUpdateRequest{
-			Owner:             q.Owner,
-			Repo:              q.Repo,
-			PullRequestNumber: p.GetNumber(),
-			NodeID:            p.GetNodeID(),
-			Title:             title,
-			PackageName:       packageName,
-		})
-	}
-
-	return reqs, nil
-}
-
-func (g *githubClient) ApprovePullRequests(ctx context.Context, reqs []DependencyUpdateRequest) error {
-	approveMessage := `Approved by dependabot-bouncer`
-	approveEvent := `APPROVE`
-
-	for _, r := range reqs {
-		_, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, &github.PullRequestReviewRequest{
-			Body:  &approveMessage,
-			Event: &approveEvent,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to approve PR #%d: %w", r.PullRequestNumber, err)
-		}
-		log.Printf("Approved PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
-	}
-
-	return nil
-}
-
-// ErrPRClean is returned by EnableAutoMerge when the PR already has all checks
-// passing and is ready to merge immediately (auto-merge is not applicable).
-var ErrPRClean = fmt.Errorf("pull request is already in clean status")
-
-// EnableAutoMerge enables auto-merge on a pull request using GitHub's GraphQL API.
-func (g *githubClient) EnableAutoMerge(ctx context.Context, graphqlEndpoint string, req DependencyUpdateRequest) error {
-	query := `mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
-		enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: $mergeMethod}) {
-			pullRequest {
-				autoMergeRequest {
-					enabledAt
-				}
-			}
-		}
-	}`
-
-	payload := map[string]any{
-		"query": query,
-		"variables": map[string]string{
-			"pullRequestId": req.NodeID,
-			"mergeMethod":   "SQUASH",
-		},
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal GraphQL request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", graphqlEndpoint, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+g.token)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := g.httpClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("GraphQL request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GraphQL request returned status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	// Check for GraphQL-level errors
-	var result struct {
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
-	}
-	if len(result.Errors) > 0 {
-		if strings.Contains(result.Errors[0].Message, "clean status") {
-			return ErrPRClean
-		}
-		return fmt.Errorf("GraphQL error: %s", result.Errors[0].Message)
-	}
-
-	return nil
-}
-
-// GetPRMergeableState returns the mergeable state of a pull request (e.g. "clean", "behind", "blocked").
-func (g *githubClient) GetPRMergeableState(ctx context.Context, req DependencyUpdateRequest) (string, error) {
-	pr, _, err := g.client.PullRequests.Get(ctx, req.Owner, req.Repo, req.PullRequestNumber)
-	if err != nil {
-		return "", fmt.Errorf("failed to get PR #%d: %w", req.PullRequestNumber, err)
-	}
-	return pr.GetMergeableState(), nil
-}
-
-// RebasePullRequest tells dependabot to rebase a single pull request.
-func (g *githubClient) RebasePullRequest(ctx context.Context, req DependencyUpdateRequest) error {
-	body := `@dependabot rebase`
-	event := `COMMENT`
-	_, _, err := g.client.PullRequests.CreateReview(ctx, req.Owner, req.Repo, req.PullRequestNumber, &github.PullRequestReviewRequest{
-		Body:  &body,
-		Event: &event,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to rebase PR #%d: %w", req.PullRequestNumber, err)
-	}
-	return nil
-}
-
-// MergePullRequest merges a pull request immediately using squash merge.
-func (g *githubClient) MergePullRequest(ctx context.Context, req DependencyUpdateRequest) error {
-	_, _, err := g.client.PullRequests.Merge(ctx, req.Owner, req.Repo, req.PullRequestNumber, "", &github.PullRequestOptions{
-		MergeMethod: "squash",
-	})
-	if err != nil {
-		return fmt.Errorf("failed to merge PR #%d: %w", req.PullRequestNumber, err)
-	}
-	return nil
-}
-
-func (g *githubClient) RebasePullRequests(ctx context.Context, reqs []DependencyUpdateRequest) error {
-	recreateMessage := `@dependabot rebase`
-	recreateEvent := `COMMENT`
-
-	for _, r := range reqs {
-		_, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, &github.PullRequestReviewRequest{
-			Body:  &recreateMessage,
-			Event: &recreateEvent,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to rebase PR #%d: %w", r.PullRequestNumber, err)
-		}
-		log.Printf("Rebased PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
-	}
-
-	return nil
-}
-
-func (g *githubClient) RecreatePullRequests(ctx context.Context, reqs []DependencyUpdateRequest) error {
-	recreateMessage := `@dependabot recreate`
-	recreateEvent := `COMMENT`
-
-	for _, r := range reqs {
-		_, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, &github.PullRequestReviewRequest{
-			Body:  &recreateMessage,
-			Event: &recreateEvent,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to recreate PR #%d: %w", r.PullRequestNumber, err)
-		}
-		log.Printf("Recreated PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
-	}
-
-	return nil
-}
-
-// GetDependabotPRs returns all open Dependabot PRs for a repository
-func (g *githubClient) GetDependabotPRs(ctx context.Context, owner, repo string) ([]PRInfo, error) {
-	var prs []PRInfo
-
-	// List all open PRs
-	pulls, _, err := g.client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
-		State: "open",
-		ListOptions: github.ListOptions{
-			Page:    0,
-			PerPage: 100,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	for _, p := range pulls {
-		// Only include Dependabot PRs
-		if p.GetUser().GetID() == dependabotUserID {
-			pr := PRInfo{
-				Number: p.GetNumber(),
-				Title:  p.GetTitle(),
-				URL:    p.GetHTMLURL(),
-			}
-
-			// Get CI status
-			if state, sErr := g.getCIState(ctx, owner, repo, p.GetHead().GetSHA()); sErr == nil {
-				pr.Status = state
-			}
-
-			prs = append(prs, pr)
-		}
-	}
-
-	return prs, nil
-}
-
-// GetDependabotPRsWithDenyList returns all open Dependabot PRs with skip status based on deny lists
-func (g *githubClient) GetDependabotPRsWithDenyList(ctx context.Context, q DependencyUpdateQuery) ([]PRInfo, error) {
-	var prs []PRInfo
-
-	// List all open PRs
-	pulls, _, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{
-		State: "open",
-		ListOptions: github.ListOptions{
-			Page:    0,
-			PerPage: 100,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	for _, p := range pulls {
-		// Only include Dependabot PRs
-		if p.GetUser().GetID() == dependabotUserID {
-			title := p.GetTitle()
-			packageName, orgName := extractPackageInfo(title)
-
-			pr := PRInfo{
-				Number: p.GetNumber(),
-				Title:  title,
-				URL:    p.GetHTMLURL(),
-			}
-
-			// Check if package or org is denied
-			if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
-				pr.Skipped = true
-				if orgName != "" {
-					for _, denied := range q.DeniedOrgs {
-						if strings.EqualFold(orgName, denied) {
-							pr.SkipReason = fmt.Sprintf("org '%s' is denied", orgName)
-							break
-						}
-					}
-				}
-				if pr.SkipReason == "" && packageName != "" {
-					for _, denied := range q.DeniedPackages {
-						if strings.EqualFold(packageName, denied) || strings.Contains(strings.ToLower(packageName), strings.ToLower(denied)) {
-							pr.SkipReason = fmt.Sprintf("package '%s' is denied", denied)
-							break
-						}
-					}
-				}
-			}
-
-			// Get CI status
-			if state, sErr := g.getCIState(ctx, q.Owner, q.Repo, p.GetHead().GetSHA()); sErr == nil {
-				pr.Status = state
-			}
-
-			prs = append(prs, pr)
-		}
-	}
-
-	return prs, nil
-}
-
-// GetOldLabeledPRs returns PRs with a specific label that are older than the specified duration
-func (g *githubClient) GetOldLabeledPRs(ctx context.Context, owner, repo, label string, maxAge time.Duration) ([]ClosePRInfo, error) {
-	var prs []ClosePRInfo
-
-	cutoff := time.Now().Add(-maxAge)
-
-	opts := &github.PullRequestListOptions{
-		State: "open",
-		ListOptions: github.ListOptions{
-			Page:    1,
-			PerPage: 100,
-		},
-	}
-
-	for {
-		pulls, resp, err := g.client.PullRequests.List(ctx, owner, repo, opts)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, p := range pulls {
-			// Check if PR has the required label
-			hasLabel := false
-			for _, l := range p.Labels {
-				if strings.EqualFold(l.GetName(), label) {
-					hasLabel = true
-					break
-				}
-			}
-
-			if !hasLabel {
-				continue
-			}
-
-			// Check if PR is older than the cutoff
-			createdAt := p.GetCreatedAt().Time
-			if createdAt.After(cutoff) {
-				continue
-			}
-
-			age := time.Since(createdAt)
-			ageStr := formatDuration(age)
-
-			prs = append(prs, ClosePRInfo{
-				Number:    p.GetNumber(),
-				Title:     p.GetTitle(),
-				URL:       p.GetHTMLURL(),
-				CreatedAt: createdAt.Format("2006-01-02"),
-				Age:       ageStr,
-			})
-		}
-
-		if resp.NextPage == 0 {
-			break
-		}
-		opts.Page = resp.NextPage
-	}
-
-	return prs, nil
-}
-
-// ClosePullRequests closes the given pull requests with a comment
-func (g *githubClient) ClosePullRequests(ctx context.Context, owner, repo string, prs []ClosePRInfo) error {
-	state := "closed"
-	comment := "Closed due to inactivity."
-
-	for _, pr := range prs {
-		// Add comment explaining why the PR is being closed
-		_, _, err := g.client.Issues.CreateComment(ctx, owner, repo, pr.Number, &github.IssueComment{
-			Body: &comment,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to comment on PR #%d: %w", pr.Number, err)
-		}
-
-		// Close the PR
-		_, _, err = g.client.PullRequests.Edit(ctx, owner, repo, pr.Number, &github.PullRequest{
-			State: &state,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to close PR #%d: %w", pr.Number, err)
-		}
-		log.Printf("Closed PR #%d: %s (age: %s)\n", pr.Number, pr.Title, pr.Age)
-	}
-
-	return nil
-}
-
-// formatDuration formats a duration in a human-readable way
-func formatDuration(d time.Duration) string {
-	days := int(d.Hours() / 24)
-	if days >= 365 {
-		years := days / 365
-		if years == 1 {
-			return "1 year"
-		}
-		return fmt.Sprintf("%d years", years)
-	}
-	if days >= 30 {
-		months := days / 30
-		if months == 1 {
-			return "1 month"
-		}
-		return fmt.Sprintf("%d months", months)
-	}
-	if days >= 7 {
-		weeks := days / 7
-		if weeks == 1 {
-			return "1 week"
-		}
-		return fmt.Sprintf("%d weeks", weeks)
-	}
-	if days >= 1 {
-		if days == 1 {
-			return "1 day"
-		}
-		return fmt.Sprintf("%d days", days)
-	}
-	hours := int(d.Hours())
-	if hours >= 1 {
-		if hours == 1 {
-			return "1 hour"
-		}
-		return fmt.Sprintf("%d hours", hours)
-	}
-	return "less than 1 hour"
 }
