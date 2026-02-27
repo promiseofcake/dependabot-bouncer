@@ -1,6 +1,12 @@
 package scm
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -509,6 +515,108 @@ func TestWildcardPatterns(t *testing.T) {
 			if result != tt.shouldMatch {
 				t.Errorf("Pattern %s match for %s = %v, want %v",
 					tt.pattern, tt.packageName, result, tt.shouldMatch)
+			}
+		})
+	}
+}
+
+func TestEnableAutoMerge(t *testing.T) {
+	tests := []struct {
+		name           string
+		responseBody   string
+		responseStatus int
+		expectError    bool
+	}{
+		{
+			name: "successful auto-merge enable",
+			responseBody: `{
+				"data": {
+					"enablePullRequestAutoMerge": {
+						"pullRequest": {
+							"autoMergeRequest": {
+								"enabledAt": "2026-01-01T00:00:00Z"
+							}
+						}
+					}
+				}
+			}`,
+			responseStatus: 200,
+			expectError:    false,
+		},
+		{
+			name: "auto-merge not allowed on repo",
+			responseBody: `{
+				"data": null,
+				"errors": [
+					{
+						"message": "Pull request is not in the correct state to enable auto-merge"
+					}
+				]
+			}`,
+			responseStatus: 200,
+			expectError:    true,
+		},
+		{
+			name:           "server error",
+			responseBody:   `{"message": "Internal Server Error"}`,
+			responseStatus: 500,
+			expectError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var receivedBody map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "POST" {
+					t.Errorf("expected POST, got %s", r.Method)
+				}
+				if r.Header.Get("Authorization") != "Bearer test-token" {
+					t.Errorf("expected Bearer test-token, got %s", r.Header.Get("Authorization"))
+				}
+
+				body, _ := io.ReadAll(r.Body)
+				json.Unmarshal(body, &receivedBody)
+
+				w.WriteHeader(tt.responseStatus)
+				w.Write([]byte(tt.responseBody))
+			}))
+			defer server.Close()
+
+			c := NewGithubClient(http.DefaultClient, "test-token")
+			ctx := context.Background()
+
+			err := c.EnableAutoMerge(ctx, server.URL, DependencyUpdateRequest{
+				Owner:             "owner",
+				Repo:              "repo",
+				PullRequestNumber: 42,
+				NodeID:            "PR_abc123",
+				Title:             "Bump foo from 1.0 to 2.0",
+				PackageName:       "foo",
+			})
+
+			if tt.expectError && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("expected no error, got %v", err)
+			}
+
+			if receivedBody != nil {
+				query, ok := receivedBody["query"].(string)
+				if !ok || !strings.Contains(query, "enablePullRequestAutoMerge") {
+					t.Error("request body missing enablePullRequestAutoMerge mutation")
+				}
+				variables, ok := receivedBody["variables"].(map[string]interface{})
+				if !ok {
+					t.Fatal("request body missing variables")
+				}
+				if variables["pullRequestId"] != "PR_abc123" {
+					t.Errorf("expected pullRequestId PR_abc123, got %v", variables["pullRequestId"])
+				}
+				if variables["mergeMethod"] != "SQUASH" {
+					t.Errorf("expected mergeMethod SQUASH, got %v", variables["mergeMethod"])
+				}
 			}
 		})
 	}
