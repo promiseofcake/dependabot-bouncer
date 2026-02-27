@@ -115,6 +115,41 @@ func ciStatus(checks []struct {
 	return "success"
 }
 
+// ApprovePR approves a pull request.
+func ApprovePR(owner, repo string, number int) error {
+	return ghCommand("approve PR", "gh", "pr", "review", "--approve",
+		"--repo", owner+"/"+repo, fmt.Sprintf("%d", number))
+}
+
+// AutoMergePR enables auto-merge (squash) on a pull request.
+func AutoMergePR(owner, repo string, number int) error {
+	return ghCommand("auto-merge PR", "gh", "pr", "merge", "--auto", "--squash",
+		"--repo", owner+"/"+repo, fmt.Sprintf("%d", number))
+}
+
+// RebasePR tells Dependabot to rebase a pull request.
+func RebasePR(owner, repo string, number int) error {
+	return ghCommand("rebase PR", "gh", "pr", "comment",
+		"--repo", owner+"/"+repo, fmt.Sprintf("%d", number),
+		"--body", "@dependabot rebase")
+}
+
+// RecreatePR tells Dependabot to recreate a pull request.
+func RecreatePR(owner, repo string, number int) error {
+	return ghCommand("recreate PR", "gh", "pr", "comment",
+		"--repo", owner+"/"+repo, fmt.Sprintf("%d", number),
+		"--body", "@dependabot recreate")
+}
+
+// ghCommand runs a gh CLI command and returns a descriptive error on failure.
+func ghCommand(desc string, args ...string) error {
+	cmd := exec.Command(args[0], args[1:]...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to %s: %s", desc, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // extractPackageInfo extracts package name and organization from a Dependabot PR title
 // Examples:
 // "Bump github.com/datadog/datadog-go from 1.0.0 to 2.0.0" -> "github.com/datadog/datadog-go", "datadog"
