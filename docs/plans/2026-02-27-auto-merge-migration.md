@@ -443,3 +443,34 @@ Expected: Builds cleanly with no warnings.
 
 Run: `git diff main...HEAD --stat` and `git log main..HEAD --oneline`
 Verify: All changes align with the design doc.
+
+---
+
+## Post-Implementation Fixes
+
+### Fix: CI state detection for GitHub Actions repos
+
+**Problem:** `GetCombinedStatus` only returns legacy commit statuses. Repos using GitHub Actions (check runs) reported `"pending"` with zero statuses, causing `skipFailing` to filter out every PR.
+
+**Fix:** Added `getCIState()` helper that checks commit statuses first, falls back to `Checks.ListCheckRunsForRef` if no statuses exist. Used in `GetDependencyUpdates`, `GetDependabotPRs`, and `GetDependabotPRsWithDenyList`.
+
+### Fix: Handle PRs already in clean status
+
+**Problem:** `enablePullRequestAutoMerge` returns a GraphQL error ("Pull request is in clean status") when all checks have already passed — auto-merge is for queuing, not for already-mergeable PRs.
+
+**Fix:** Added `ErrPRClean` sentinel error. When detected, fall back to `MergePullRequest` (squash merge via REST API).
+
+### Fix: Rebase out-of-date PRs before enabling auto-merge
+
+**Problem:** PRs behind `main` (`mergeable_state: "behind"`) need a rebase before CI can validate against the latest base.
+
+**Fix:** Added `GetPRMergeableState` and `RebasePullRequest` methods. The approve flow now checks each PR's state — if behind, it tells dependabot to rebase (`@dependabot rebase`) and enables auto-merge so the PR merges automatically once CI passes on the rebased branch.
+
+### Codebase cleanup
+
+- Deduplicated `GetDependencyUpdates` (collapsed two near-identical branches)
+- Fixed raw pointer dereference `*p.Number` → `p.GetNumber()`
+- Removed garbage comment, duplicate const
+- Extracted `parseRepo` and `buildDenyLists` helpers
+- `interface{}` → `any`
+- Added `-race` flag to CI test step

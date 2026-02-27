@@ -193,6 +193,48 @@ func isDenied(packageName, orgName string, deniedPackages, deniedOrgs []string) 
 	return false
 }
 
+// getCIState returns the combined CI state for a commit ref by checking both
+// the legacy commit status API and the check runs API. GitHub Actions only
+// reports via check runs, while other CI systems (CircleCI, Jenkins) use
+// commit statuses. We need both to get the full picture.
+//
+// Returns "success" only if all reported checks/statuses have succeeded and at
+// least one check or status exists. Returns "pending" if no CI data exists.
+func (g *githubClient) getCIState(ctx context.Context, owner, repo, ref string) (string, error) {
+	status, _, err := g.client.Repositories.GetCombinedStatus(ctx, owner, repo, ref, &github.ListOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	// If there are commit statuses, use that result directly.
+	if status.GetTotalCount() > 0 {
+		return status.GetState(), nil
+	}
+
+	// No commit statuses — fall back to check runs (GitHub Actions).
+	checks, _, err := g.client.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, &github.ListCheckRunsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if checks.GetTotal() == 0 {
+		return "pending", nil
+	}
+
+	for _, cr := range checks.CheckRuns {
+		if cr.GetStatus() != "completed" {
+			return "pending", nil
+		}
+		if cr.GetConclusion() != "success" && cr.GetConclusion() != "skipped" && cr.GetConclusion() != "neutral" {
+			return "failure", nil
+		}
+	}
+
+	return "success", nil
+}
+
 func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpdateQuery, skipFailing bool) ([]DependencyUpdateRequest, error) {
 	var reqs []DependencyUpdateRequest
 
@@ -230,11 +272,11 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 		}
 
 		if skipFailing {
-			status, _, sErr := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
+			state, sErr := g.getCIState(ctx, q.Owner, q.Repo, p.GetHead().GetSHA())
 			if sErr != nil {
 				return nil, sErr
 			}
-			if status.GetState() != "success" {
+			if state != "success" {
 				continue
 			}
 		}
@@ -269,6 +311,10 @@ func (g *githubClient) ApprovePullRequests(ctx context.Context, reqs []Dependenc
 
 	return nil
 }
+
+// ErrPRClean is returned by EnableAutoMerge when the PR already has all checks
+// passing and is ready to merge immediately (auto-merge is not applicable).
+var ErrPRClean = fmt.Errorf("pull request is already in clean status")
 
 // EnableAutoMerge enables auto-merge on a pull request using GitHub's GraphQL API.
 func (g *githubClient) EnableAutoMerge(ctx context.Context, graphqlEndpoint string, req DependencyUpdateRequest) error {
@@ -327,9 +373,46 @@ func (g *githubClient) EnableAutoMerge(ctx context.Context, graphqlEndpoint stri
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 	if len(result.Errors) > 0 {
+		if strings.Contains(result.Errors[0].Message, "clean status") {
+			return ErrPRClean
+		}
 		return fmt.Errorf("GraphQL error: %s", result.Errors[0].Message)
 	}
 
+	return nil
+}
+
+// GetPRMergeableState returns the mergeable state of a pull request (e.g. "clean", "behind", "blocked").
+func (g *githubClient) GetPRMergeableState(ctx context.Context, req DependencyUpdateRequest) (string, error) {
+	pr, _, err := g.client.PullRequests.Get(ctx, req.Owner, req.Repo, req.PullRequestNumber)
+	if err != nil {
+		return "", fmt.Errorf("failed to get PR #%d: %w", req.PullRequestNumber, err)
+	}
+	return pr.GetMergeableState(), nil
+}
+
+// RebasePullRequest tells dependabot to rebase a single pull request.
+func (g *githubClient) RebasePullRequest(ctx context.Context, req DependencyUpdateRequest) error {
+	body := `@dependabot rebase`
+	event := `COMMENT`
+	_, _, err := g.client.PullRequests.CreateReview(ctx, req.Owner, req.Repo, req.PullRequestNumber, &github.PullRequestReviewRequest{
+		Body:  &body,
+		Event: &event,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to rebase PR #%d: %w", req.PullRequestNumber, err)
+	}
+	return nil
+}
+
+// MergePullRequest merges a pull request immediately using squash merge.
+func (g *githubClient) MergePullRequest(ctx context.Context, req DependencyUpdateRequest) error {
+	_, _, err := g.client.PullRequests.Merge(ctx, req.Owner, req.Repo, req.PullRequestNumber, "", &github.PullRequestOptions{
+		MergeMethod: "squash",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to merge PR #%d: %w", req.PullRequestNumber, err)
+	}
 	return nil
 }
 
@@ -395,9 +478,8 @@ func (g *githubClient) GetDependabotPRs(ctx context.Context, owner, repo string)
 			}
 
 			// Get CI status
-			status, _, err := g.client.Repositories.GetCombinedStatus(ctx, owner, repo, p.GetHead().GetSHA(), &github.ListOptions{})
-			if err == nil {
-				pr.Status = status.GetState()
+			if state, sErr := g.getCIState(ctx, owner, repo, p.GetHead().GetSHA()); sErr == nil {
+				pr.Status = state
 			}
 
 			prs = append(prs, pr)
@@ -457,9 +539,8 @@ func (g *githubClient) GetDependabotPRsWithDenyList(ctx context.Context, q Depen
 			}
 
 			// Get CI status
-			status, _, err := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
-			if err == nil {
-				pr.Status = status.GetState()
+			if state, sErr := g.getCIState(ctx, q.Owner, q.Repo, p.GetHead().GetSHA()); sErr == nil {
+				pr.Status = state
 			}
 
 			prs = append(prs, pr)

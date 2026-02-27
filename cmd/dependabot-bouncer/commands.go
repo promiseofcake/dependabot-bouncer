@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -279,10 +280,32 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 			return fmt.Errorf("failed to approve pull requests: %w", err)
 		}
 
-		// Enable auto-merge on each approved PR
+		// For each approved PR: enable auto-merge, merge directly if clean, or rebase if behind
 		for _, u := range updates {
+			state, sErr := c.GetPRMergeableState(ctx, u)
+			if sErr != nil {
+				log.Printf("Warning: could not get mergeable state for PR #%d: %v\n", u.PullRequestNumber, sErr)
+			}
+
+			if state == "behind" {
+				// PR is behind main — tell dependabot to rebase, then enable auto-merge
+				if rErr := c.RebasePullRequest(ctx, u); rErr != nil {
+					log.Printf("Warning: failed to rebase PR #%d: %v\n", u.PullRequestNumber, rErr)
+				} else {
+					log.Printf("Requested rebase on PR #%d (behind main): %s\n", u.PullRequestNumber, u.Title)
+				}
+			}
+
 			if amErr := c.EnableAutoMerge(ctx, scm.GraphQLURL, u); amErr != nil {
-				log.Printf("Warning: failed to enable auto-merge on PR #%d: %v\n", u.PullRequestNumber, amErr)
+				if errors.Is(amErr, scm.ErrPRClean) {
+					if mErr := c.MergePullRequest(ctx, u); mErr != nil {
+						log.Printf("Warning: failed to merge clean PR #%d: %v\n", u.PullRequestNumber, mErr)
+					} else {
+						log.Printf("Merged PR #%d (already clean): %s\n", u.PullRequestNumber, u.Title)
+					}
+				} else {
+					log.Printf("Warning: failed to enable auto-merge on PR #%d: %v\n", u.PullRequestNumber, amErr)
+				}
 			} else {
 				log.Printf("Enabled auto-merge on PR #%d: %s\n", u.PullRequestNumber, u.Title)
 			}
