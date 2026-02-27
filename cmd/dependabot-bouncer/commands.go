@@ -270,12 +270,23 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 
 	if recreate {
 		err = c.RecreatePullRequests(ctx, updates)
+		if err != nil {
+			return fmt.Errorf("failed to process pull requests: %w", err)
+		}
 	} else {
 		err = c.ApprovePullRequests(ctx, updates)
-	}
+		if err != nil {
+			return fmt.Errorf("failed to approve pull requests: %w", err)
+		}
 
-	if err != nil {
-		return fmt.Errorf("failed to process pull requests: %w", err)
+		// Enable auto-merge on each approved PR
+		for _, u := range updates {
+			if amErr := c.EnableAutoMerge(ctx, scm.GraphQLURL, u); amErr != nil {
+				log.Printf("Warning: failed to enable auto-merge on PR #%d: %v\n", u.PullRequestNumber, amErr)
+			} else {
+				log.Printf("Enabled auto-merge on PR #%d: %s\n", u.PullRequestNumber, u.Title)
+			}
+		}
 	}
 
 	return nil
