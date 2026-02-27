@@ -15,6 +15,7 @@ type PRInfo struct {
 	Title            string
 	URL              string
 	MergeStateStatus string // BEHIND, BLOCKED, CLEAN, DIRTY, DRAFT, HAS_HOOKS, UNKNOWN, UNSTABLE
+	ReviewDecision   string // APPROVED, REVIEW_REQUIRED, CHANGES_REQUESTED
 	CIStatus         string // success, failure, pending
 	PackageName      string
 	Skipped          bool

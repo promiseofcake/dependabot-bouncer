@@ -9,19 +9,26 @@ import (
 	"strings"
 )
 
+// statusCheck represents a single entry in statusCheckRollup.
+// gh returns two types: CheckRun (has status/conclusion) and StatusContext (has state).
+type statusCheck struct {
+	TypeName   string `json:"__typename"`
+	Status     string `json:"status"`     // CheckRun: COMPLETED, IN_PROGRESS, etc.
+	Conclusion string `json:"conclusion"` // CheckRun: SUCCESS, FAILURE, etc.
+	State      string `json:"state"`      // StatusContext: SUCCESS, FAILURE, PENDING, ERROR, EXPECTED
+}
+
 // ghPR represents a pull request as returned by `gh pr list --json`.
 type ghPR struct {
 	Number           int    `json:"number"`
 	Title            string `json:"title"`
 	URL              string `json:"url"`
 	MergeStateStatus string `json:"mergeStateStatus"`
+	ReviewDecision   string `json:"reviewDecision"`
 	Author           struct {
 		Login string `json:"login"`
 	} `json:"author"`
-	StatusCheckRollup []struct {
-		Status     string `json:"status"`
-		Conclusion string `json:"conclusion"`
-	} `json:"statusCheckRollup"`
+	StatusCheckRollup []statusCheck `json:"statusCheckRollup"`
 }
 
 // ListDependabotPRs lists open Dependabot PRs for the given repository,
@@ -31,7 +38,7 @@ func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, err
 	cmd := exec.Command("gh", "pr", "list",
 		"--repo", q.Owner+"/"+q.Repo,
 		"--base", "main",
-		"--json", "number,title,url,author,mergeStateStatus,statusCheckRollup",
+		"--json", "number,title,url,author,mergeStateStatus,reviewDecision,statusCheckRollup",
 		"--limit", "100",
 	)
 
@@ -81,6 +88,7 @@ func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, err
 			Title:            p.Title,
 			URL:              p.URL,
 			MergeStateStatus: p.MergeStateStatus,
+			ReviewDecision:   p.ReviewDecision,
 			CIStatus:         status,
 			PackageName:      packageName,
 		})
@@ -91,25 +99,34 @@ func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, err
 
 // ciStatus determines the overall CI status from a statusCheckRollup.
 //
-// Returns "pending" if there are no checks or any check is still running,
-// "failure" if any check concluded with a non-success/skipped/neutral result,
-// and "success" otherwise.
-func ciStatus(checks []struct {
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
-}) string {
+// The rollup contains two types: CheckRun (status/conclusion) and
+// StatusContext (state). Returns "pending" if there are no checks or any
+// check is still running, "failure" if any check failed, "success" otherwise.
+func ciStatus(checks []statusCheck) string {
 	if len(checks) == 0 {
 		return "pending"
 	}
 	for _, c := range checks {
-		if c.Status != "COMPLETED" {
-			return "pending"
-		}
-		switch c.Conclusion {
-		case "SUCCESS", "SKIPPED", "NEUTRAL":
-			// ok
-		default:
-			return "failure"
+		if c.TypeName == "StatusContext" {
+			switch c.State {
+			case "SUCCESS":
+				// ok
+			case "PENDING", "EXPECTED":
+				return "pending"
+			default:
+				return "failure"
+			}
+		} else {
+			// CheckRun
+			if c.Status != "COMPLETED" {
+				return "pending"
+			}
+			switch c.Conclusion {
+			case "SUCCESS", "SKIPPED", "NEUTRAL":
+				// ok
+			default:
+				return "failure"
+			}
 		}
 	}
 	return "success"

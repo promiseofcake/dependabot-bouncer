@@ -85,18 +85,32 @@ func runApprove(owner, repo string) error {
 	fmt.Printf("Processing %d pull requests...\n", len(prs))
 
 	for _, pr := range prs {
-		if err := scm.ApprovePR(owner, repo, pr.Number); err != nil {
-			log.Printf("Warning: failed to approve PR #%d: %v\n", pr.Number, err)
-			continue
-		}
-		log.Printf("Approved PR #%d: %s (package: %s)\n", pr.Number, pr.Title, pr.PackageName)
+		switch pr.MergeStateStatus {
+		case "DIRTY":
+			// Conflicts — recreate the PR so Dependabot resolves them.
+			if err := scm.RecreatePR(owner, repo, pr.Number); err != nil {
+				log.Printf("Warning: failed to recreate PR #%d: %v\n", pr.Number, err)
+				continue
+			}
+			log.Printf("Recreated PR #%d (conflicts): %s\n", pr.Number, pr.Title)
 
-		if pr.MergeStateStatus == "BEHIND" {
+		case "BEHIND":
+			// Behind main — request a rebase.
 			if err := scm.RebasePR(owner, repo, pr.Number); err != nil {
 				log.Printf("Warning: failed to rebase PR #%d: %v\n", pr.Number, err)
 			} else {
 				log.Printf("Requested rebase on PR #%d (behind main): %s\n", pr.Number, pr.Title)
 			}
+		}
+
+		if pr.ReviewDecision == "APPROVED" {
+			log.Printf("Already approved PR #%d: %s\n", pr.Number, pr.Title)
+		} else {
+			if err := scm.ApprovePR(owner, repo, pr.Number); err != nil {
+				log.Printf("Warning: failed to approve PR #%d: %v\n", pr.Number, err)
+				continue
+			}
+			log.Printf("Approved PR #%d: %s (package: %s)\n", pr.Number, pr.Title, pr.PackageName)
 		}
 
 		if err := scm.AutoMergePR(owner, repo, pr.Number); err != nil {
@@ -187,8 +201,8 @@ func runCheck(cmd *cobra.Command, args []string) error {
 				fmt.Printf("   %s\n", pr.URL)
 				if pr.Skipped {
 					fmt.Printf("   Status: SKIPPED (%s)\n", pr.SkipReason)
-				} else if pr.CIStatus != "" {
-					fmt.Printf("   Status: %s\n", pr.CIStatus)
+				} else {
+					fmt.Printf("   CI: %s | Merge: %s\n", pr.CIStatus, pr.MergeStateStatus)
 				}
 				fmt.Println()
 			}
