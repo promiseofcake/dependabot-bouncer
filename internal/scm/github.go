@@ -20,14 +20,16 @@ const (
 )
 
 type githubClient struct {
-	client *github.Client
-	token  string
+	client     *github.Client
+	httpClient *http.Client
+	token      string
 }
 
 func NewGithubClient(client *http.Client, token string) *githubClient {
 	return &githubClient{
-		client: github.NewClient(client).WithAuthToken(token),
-		token:  token,
+		client:     github.NewClient(client).WithAuthToken(token),
+		httpClient: client,
+		token:      token,
 	}
 }
 
@@ -274,21 +276,14 @@ func (g *githubClient) ApprovePullRequests(ctx context.Context, reqs []Dependenc
 	approveEvent := `APPROVE`
 
 	for _, r := range reqs {
-		request := &github.PullRequestReviewRequest{
-			Body:  &approveMessage,
-			Event: &approveEvent,
-		}
-
-		review, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, &github.PullRequestReviewRequest{
+		_, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, &github.PullRequestReviewRequest{
 			Body:  &approveMessage,
 			Event: &approveEvent,
 		})
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("failed to approve PR #%d: %w", r.PullRequestNumber, err)
 		}
 		log.Printf("Approved PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
-		_ = review
-		_ = request
 	}
 
 	return nil
@@ -328,7 +323,7 @@ func (g *githubClient) EnableAutoMerge(ctx context.Context, graphqlEndpoint stri
 	httpReq.Header.Set("Authorization", "Bearer "+g.token)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := g.httpClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("GraphQL request failed: %w", err)
 	}
@@ -364,18 +359,14 @@ func (g *githubClient) RebasePullRequests(ctx context.Context, reqs []Dependency
 	recreateEvent := `COMMENT`
 
 	for _, r := range reqs {
-		request := &github.PullRequestReviewRequest{
+		_, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, &github.PullRequestReviewRequest{
 			Body:  &recreateMessage,
 			Event: &recreateEvent,
-		}
-
-		review, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, request)
+		})
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("failed to rebase PR #%d: %w", r.PullRequestNumber, err)
 		}
 		log.Printf("Rebased PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
-		_ = review
-		_ = request
 	}
 
 	return nil
@@ -386,18 +377,14 @@ func (g *githubClient) RecreatePullRequests(ctx context.Context, reqs []Dependen
 	recreateEvent := `COMMENT`
 
 	for _, r := range reqs {
-		request := &github.PullRequestReviewRequest{
+		_, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, &github.PullRequestReviewRequest{
 			Body:  &recreateMessage,
 			Event: &recreateEvent,
-		}
-
-		review, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, request)
+		})
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("failed to recreate PR #%d: %w", r.PullRequestNumber, err)
 		}
 		log.Printf("Recreated PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
-		_ = review
-		_ = request
 	}
 
 	return nil
