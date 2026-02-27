@@ -270,7 +270,7 @@ func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpd
 }
 
 func (g *githubClient) ApprovePullRequests(ctx context.Context, reqs []DependencyUpdateRequest) error {
-	approveMessage := `@dependabot merge`
+	approveMessage := `Approved by dependabot-bouncer`
 	approveEvent := `APPROVE`
 
 	for _, r := range reqs {
