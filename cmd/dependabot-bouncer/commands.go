@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/promiseofcake/dependabot-bouncer/internal/scm"
 	"github.com/spf13/cobra"
@@ -284,7 +285,11 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 func resolveGitHubToken() (string, error) {
 	token := viper.GetString("github-token")
 	if token == "" {
-		if out, err := exec.Command("gh", "auth", "token").Output(); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output(); err != nil {
+			log.Printf("gh auth token fallback failed: %v", err)
+		} else {
 			token = strings.TrimSpace(string(out))
 		}
 	}
