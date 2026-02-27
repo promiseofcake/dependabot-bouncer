@@ -1,29 +1,170 @@
 package scm
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
+	"os/exec"
 	"regexp"
 	"strings"
-	"time"
-
-	"github.com/google/go-github/v72/github"
 )
 
-const (
-	dependabotUserID int64 = 49699333
-)
-
-type githubClient struct {
-	client *github.Client
+// statusCheck represents a single entry in statusCheckRollup.
+// gh returns two types: CheckRun (has status/conclusion) and StatusContext (has state).
+type statusCheck struct {
+	TypeName   string `json:"__typename"`
+	Status     string `json:"status"`     // CheckRun: COMPLETED, IN_PROGRESS, etc.
+	Conclusion string `json:"conclusion"` // CheckRun: SUCCESS, FAILURE, etc.
+	State      string `json:"state"`      // StatusContext: SUCCESS, FAILURE, PENDING, ERROR, EXPECTED
 }
 
-func NewGithubClient(client *http.Client, token string) *githubClient {
-	return &githubClient{
-		client: github.NewClient(client).WithAuthToken(token),
+// ghPR represents a pull request as returned by `gh pr list --json`.
+type ghPR struct {
+	Number           int    `json:"number"`
+	Title            string `json:"title"`
+	URL              string `json:"url"`
+	MergeStateStatus string `json:"mergeStateStatus"`
+	ReviewDecision   string `json:"reviewDecision"`
+	Author           struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	StatusCheckRollup []statusCheck `json:"statusCheckRollup"`
+}
+
+// ListDependabotPRs lists open Dependabot PRs for the given repository,
+// applying the filters described in the query. When skipFailing is true,
+// only PRs whose CI status is "success" are returned.
+func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, error) {
+	cmd := exec.Command("gh", "pr", "list",
+		"--repo", q.Owner+"/"+q.Repo,
+		"--base", "main",
+		"--json", "number,title,url,author,mergeStateStatus,reviewDecision,statusCheckRollup",
+		"--limit", "100",
+	)
+
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("gh pr list failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, fmt.Errorf("gh pr list failed: %w", err)
 	}
+
+	var ghPRs []ghPR
+	if err := json.Unmarshal(out, &ghPRs); err != nil {
+		return nil, fmt.Errorf("failed to parse gh output: %w", err)
+	}
+
+	excluded := make(map[int]bool, len(q.IgnoredPRs))
+	for _, n := range q.IgnoredPRs {
+		excluded[n] = true
+	}
+
+	var prs []PRInfo
+	for _, p := range ghPRs {
+		if excluded[p.Number] {
+			continue
+		}
+
+		if p.Author.Login != "app/dependabot" {
+			continue
+		}
+
+		packageName, orgName := extractPackageInfo(p.Title)
+
+		if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
+			log.Printf("Skipping denied package: %s (org: %s) - PR #%d: %s\n", packageName, orgName, p.Number, p.Title)
+			continue
+		}
+
+		status := ciStatus(p.StatusCheckRollup)
+
+		if skipFailing && status != "success" {
+			continue
+		}
+
+		prs = append(prs, PRInfo{
+			Number:           p.Number,
+			Title:            p.Title,
+			URL:              p.URL,
+			MergeStateStatus: p.MergeStateStatus,
+			ReviewDecision:   p.ReviewDecision,
+			CIStatus:         status,
+			PackageName:      packageName,
+		})
+	}
+
+	return prs, nil
+}
+
+// ciStatus determines the overall CI status from a statusCheckRollup.
+//
+// The rollup contains two types: CheckRun (status/conclusion) and
+// StatusContext (state). Returns "pending" if there are no checks or any
+// check is still running, "failure" if any check failed, "success" otherwise.
+func ciStatus(checks []statusCheck) string {
+	if len(checks) == 0 {
+		return "pending"
+	}
+	for _, c := range checks {
+		if c.TypeName == "StatusContext" {
+			switch c.State {
+			case "SUCCESS":
+				// ok
+			case "PENDING", "EXPECTED":
+				return "pending"
+			default:
+				return "failure"
+			}
+		} else {
+			// CheckRun
+			if c.Status != "COMPLETED" {
+				return "pending"
+			}
+			switch c.Conclusion {
+			case "SUCCESS", "SKIPPED", "NEUTRAL":
+				// ok
+			default:
+				return "failure"
+			}
+		}
+	}
+	return "success"
+}
+
+// ApprovePR approves a pull request.
+func ApprovePR(owner, repo string, number int) error {
+	return ghCommand("approve PR", "gh", "pr", "review", "--approve",
+		"--repo", owner+"/"+repo, fmt.Sprintf("%d", number))
+}
+
+// AutoMergePR enables auto-merge (squash) on a pull request.
+func AutoMergePR(owner, repo string, number int) error {
+	return ghCommand("auto-merge PR", "gh", "pr", "merge", "--auto", "--squash",
+		"--repo", owner+"/"+repo, fmt.Sprintf("%d", number))
+}
+
+// RebasePR tells Dependabot to rebase a pull request.
+func RebasePR(owner, repo string, number int) error {
+	return ghCommand("rebase PR", "gh", "pr", "comment",
+		"--repo", owner+"/"+repo, fmt.Sprintf("%d", number),
+		"--body", "@dependabot rebase")
+}
+
+// RecreatePR tells Dependabot to recreate a pull request.
+func RecreatePR(owner, repo string, number int) error {
+	return ghCommand("recreate PR", "gh", "pr", "comment",
+		"--repo", owner+"/"+repo, fmt.Sprintf("%d", number),
+		"--body", "@dependabot recreate")
+}
+
+// ghCommand runs a gh CLI command and returns a descriptive error on failure.
+func ghCommand(desc string, args ...string) error {
+	cmd := exec.Command(args[0], args[1:]...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to %s: %s", desc, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // extractPackageInfo extracts package name and organization from a Dependabot PR title
@@ -181,380 +322,4 @@ func isDenied(packageName, orgName string, deniedPackages, deniedOrgs []string) 
 	}
 
 	return false
-}
-
-func (g *githubClient) GetDependencyUpdates(ctx context.Context, q DependencyUpdateQuery, skipFailing bool) ([]DependencyUpdateRequest, error) {
-	var reqs []DependencyUpdateRequest
-
-	excluded := make(map[int]bool)
-	for _, p := range q.IgnoredPRs {
-		excluded[p] = true
-	}
-
-	// need to iterate throught the list
-	pulls, resp, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{
-		Base: "main",
-		ListOptions: github.ListOptions{
-			Page:    0,
-			PerPage: 100,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	fmt.Println(resp)
-
-	for _, p := range pulls {
-		// exclude excluded PRs
-		if _, ok := excluded[*p.Number]; ok {
-			continue
-		}
-
-		if skipFailing {
-			if p.GetUser().GetID() == dependabotUserID {
-				title := p.GetTitle()
-				packageName, orgName := extractPackageInfo(title)
-
-				// Check if package or org is denied
-				if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
-					log.Printf("Skipping denied package: %s (org: %s) - PR #%d: %s\n", packageName, orgName, p.GetNumber(), title)
-					continue
-				}
-
-				status, _, sErr := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
-				if sErr != nil {
-					return nil, sErr
-				}
-
-				if status.GetState() == "success" {
-					reqs = append(reqs, DependencyUpdateRequest{
-						Owner:             q.Owner,
-						Repo:              q.Repo,
-						PullRequestNumber: p.GetNumber(),
-						Title:             title,
-						PackageName:       packageName,
-					})
-				}
-			}
-		} else {
-			if p.GetUser().GetID() == dependabotUserID {
-				title := p.GetTitle()
-				packageName, orgName := extractPackageInfo(title)
-
-				// Check if package or org is denied
-				if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
-					log.Printf("Skipping denied package: %s (org: %s) - PR #%d: %s\n", packageName, orgName, p.GetNumber(), title)
-					continue
-				}
-
-				reqs = append(reqs, DependencyUpdateRequest{
-					Owner:             q.Owner,
-					Repo:              q.Repo,
-					PullRequestNumber: p.GetNumber(),
-					Title:             title,
-					PackageName:       packageName,
-				})
-			}
-		}
-	}
-
-	return reqs, nil
-}
-
-func (g *githubClient) ApprovePullRequests(ctx context.Context, reqs []DependencyUpdateRequest) error {
-	approveMessage := `@dependabot merge`
-	approveEvent := `APPROVE`
-
-	for _, r := range reqs {
-		request := &github.PullRequestReviewRequest{
-			Body:  &approveMessage,
-			Event: &approveEvent,
-		}
-
-		review, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, &github.PullRequestReviewRequest{
-			Body:  &approveMessage,
-			Event: &approveEvent,
-		})
-		if err != nil {
-			panic(err)
-		}
-		log.Printf("Approved PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
-		_ = review
-		_ = request
-	}
-
-	return nil
-}
-
-func (g *githubClient) RebasePullRequests(ctx context.Context, reqs []DependencyUpdateRequest) error {
-	recreateMessage := `@dependabot rebase`
-	recreateEvent := `COMMENT`
-
-	for _, r := range reqs {
-		request := &github.PullRequestReviewRequest{
-			Body:  &recreateMessage,
-			Event: &recreateEvent,
-		}
-
-		review, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, request)
-		if err != nil {
-			panic(err)
-		}
-		log.Printf("Rebased PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
-		_ = review
-		_ = request
-	}
-
-	return nil
-}
-
-func (g *githubClient) RecreatePullRequests(ctx context.Context, reqs []DependencyUpdateRequest) error {
-	recreateMessage := `@dependabot recreate`
-	recreateEvent := `COMMENT`
-
-	for _, r := range reqs {
-		request := &github.PullRequestReviewRequest{
-			Body:  &recreateMessage,
-			Event: &recreateEvent,
-		}
-
-		review, _, err := g.client.PullRequests.CreateReview(ctx, r.Owner, r.Repo, r.PullRequestNumber, request)
-		if err != nil {
-			panic(err)
-		}
-		log.Printf("Recreated PR #%d: %s (package: %s)\n", r.PullRequestNumber, r.Title, r.PackageName)
-		_ = review
-		_ = request
-	}
-
-	return nil
-}
-
-// GetDependabotPRs returns all open Dependabot PRs for a repository
-func (g *githubClient) GetDependabotPRs(ctx context.Context, owner, repo string) ([]PRInfo, error) {
-	var prs []PRInfo
-
-	// List all open PRs
-	pulls, _, err := g.client.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
-		State: "open",
-		ListOptions: github.ListOptions{
-			Page:    0,
-			PerPage: 100,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	for _, p := range pulls {
-		// Only include Dependabot PRs
-		if p.GetUser().GetID() == dependabotUserID {
-			pr := PRInfo{
-				Number: p.GetNumber(),
-				Title:  p.GetTitle(),
-				URL:    p.GetHTMLURL(),
-			}
-
-			// Get CI status
-			status, _, err := g.client.Repositories.GetCombinedStatus(ctx, owner, repo, p.GetHead().GetSHA(), &github.ListOptions{})
-			if err == nil {
-				pr.Status = status.GetState()
-			}
-
-			prs = append(prs, pr)
-		}
-	}
-
-	return prs, nil
-}
-
-// GetDependabotPRsWithDenyList returns all open Dependabot PRs with skip status based on deny lists
-func (g *githubClient) GetDependabotPRsWithDenyList(ctx context.Context, q DependencyUpdateQuery) ([]PRInfo, error) {
-	var prs []PRInfo
-
-	// List all open PRs
-	pulls, _, err := g.client.PullRequests.List(ctx, q.Owner, q.Repo, &github.PullRequestListOptions{
-		State: "open",
-		ListOptions: github.ListOptions{
-			Page:    0,
-			PerPage: 100,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	for _, p := range pulls {
-		// Only include Dependabot PRs
-		if p.GetUser().GetID() == dependabotUserID {
-			title := p.GetTitle()
-			packageName, orgName := extractPackageInfo(title)
-
-			pr := PRInfo{
-				Number: p.GetNumber(),
-				Title:  title,
-				URL:    p.GetHTMLURL(),
-			}
-
-			// Check if package or org is denied
-			if isDenied(packageName, orgName, q.DeniedPackages, q.DeniedOrgs) {
-				pr.Skipped = true
-				if orgName != "" {
-					for _, denied := range q.DeniedOrgs {
-						if strings.EqualFold(orgName, denied) {
-							pr.SkipReason = fmt.Sprintf("org '%s' is denied", orgName)
-							break
-						}
-					}
-				}
-				if pr.SkipReason == "" && packageName != "" {
-					for _, denied := range q.DeniedPackages {
-						if strings.EqualFold(packageName, denied) || strings.Contains(strings.ToLower(packageName), strings.ToLower(denied)) {
-							pr.SkipReason = fmt.Sprintf("package '%s' is denied", denied)
-							break
-						}
-					}
-				}
-			}
-
-			// Get CI status
-			status, _, err := g.client.Repositories.GetCombinedStatus(ctx, q.Owner, q.Repo, p.GetHead().GetSHA(), &github.ListOptions{})
-			if err == nil {
-				pr.Status = status.GetState()
-			}
-
-			prs = append(prs, pr)
-		}
-	}
-
-	return prs, nil
-}
-
-// GetOldLabeledPRs returns PRs with a specific label that are older than the specified duration
-func (g *githubClient) GetOldLabeledPRs(ctx context.Context, owner, repo, label string, maxAge time.Duration) ([]ClosePRInfo, error) {
-	var prs []ClosePRInfo
-
-	cutoff := time.Now().Add(-maxAge)
-
-	opts := &github.PullRequestListOptions{
-		State: "open",
-		ListOptions: github.ListOptions{
-			Page:    1,
-			PerPage: 100,
-		},
-	}
-
-	for {
-		pulls, resp, err := g.client.PullRequests.List(ctx, owner, repo, opts)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, p := range pulls {
-			// Check if PR has the required label
-			hasLabel := false
-			for _, l := range p.Labels {
-				if strings.EqualFold(l.GetName(), label) {
-					hasLabel = true
-					break
-				}
-			}
-
-			if !hasLabel {
-				continue
-			}
-
-			// Check if PR is older than the cutoff
-			createdAt := p.GetCreatedAt().Time
-			if createdAt.After(cutoff) {
-				continue
-			}
-
-			age := time.Since(createdAt)
-			ageStr := formatDuration(age)
-
-			prs = append(prs, ClosePRInfo{
-				Number:    p.GetNumber(),
-				Title:     p.GetTitle(),
-				URL:       p.GetHTMLURL(),
-				CreatedAt: createdAt.Format("2006-01-02"),
-				Age:       ageStr,
-			})
-		}
-
-		if resp.NextPage == 0 {
-			break
-		}
-		opts.Page = resp.NextPage
-	}
-
-	return prs, nil
-}
-
-// ClosePullRequests closes the given pull requests with a comment
-func (g *githubClient) ClosePullRequests(ctx context.Context, owner, repo string, prs []ClosePRInfo) error {
-	state := "closed"
-	comment := "Closed due to inactivity."
-
-	for _, pr := range prs {
-		// Add comment explaining why the PR is being closed
-		_, _, err := g.client.Issues.CreateComment(ctx, owner, repo, pr.Number, &github.IssueComment{
-			Body: &comment,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to comment on PR #%d: %w", pr.Number, err)
-		}
-
-		// Close the PR
-		_, _, err = g.client.PullRequests.Edit(ctx, owner, repo, pr.Number, &github.PullRequest{
-			State: &state,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to close PR #%d: %w", pr.Number, err)
-		}
-		log.Printf("Closed PR #%d: %s (age: %s)\n", pr.Number, pr.Title, pr.Age)
-	}
-
-	return nil
-}
-
-// formatDuration formats a duration in a human-readable way
-func formatDuration(d time.Duration) string {
-	days := int(d.Hours() / 24)
-	if days >= 365 {
-		years := days / 365
-		if years == 1 {
-			return "1 year"
-		}
-		return fmt.Sprintf("%d years", years)
-	}
-	if days >= 30 {
-		months := days / 30
-		if months == 1 {
-			return "1 month"
-		}
-		return fmt.Sprintf("%d months", months)
-	}
-	if days >= 7 {
-		weeks := days / 7
-		if weeks == 1 {
-			return "1 week"
-		}
-		return fmt.Sprintf("%d weeks", weeks)
-	}
-	if days >= 1 {
-		if days == 1 {
-			return "1 day"
-		}
-		return fmt.Sprintf("%d days", days)
-	}
-	hours := int(d.Hours())
-	if hours >= 1 {
-		if hours == 1 {
-			return "1 hour"
-		}
-		return fmt.Sprintf("%d hours", hours)
-	}
-	return "less than 1 hour"
 }

@@ -513,3 +513,112 @@ func TestWildcardPatterns(t *testing.T) {
 		})
 	}
 }
+
+func TestCIStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		checks []statusCheck
+		want   string
+	}{
+		{
+			name:   "no checks",
+			checks: nil,
+			want:   "pending",
+		},
+		{
+			name: "all CheckRun success",
+			checks: []statusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SUCCESS"},
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			},
+			want: "success",
+		},
+		{
+			name: "CheckRun failure",
+			checks: []statusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SUCCESS"},
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "FAILURE"},
+			},
+			want: "failure",
+		},
+		{
+			name: "CheckRun still running",
+			checks: []statusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SUCCESS"},
+				{TypeName: "CheckRun", Status: "IN_PROGRESS"},
+			},
+			want: "pending",
+		},
+		{
+			name: "CheckRun skipped counts as success",
+			checks: []statusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SUCCESS"},
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SKIPPED"},
+			},
+			want: "success",
+		},
+		{
+			name: "CheckRun neutral counts as success",
+			checks: []statusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "NEUTRAL"},
+			},
+			want: "success",
+		},
+		{
+			name: "StatusContext success",
+			checks: []statusCheck{
+				{TypeName: "StatusContext", State: "SUCCESS"},
+				{TypeName: "StatusContext", State: "SUCCESS"},
+			},
+			want: "success",
+		},
+		{
+			name: "StatusContext failure",
+			checks: []statusCheck{
+				{TypeName: "StatusContext", State: "SUCCESS"},
+				{TypeName: "StatusContext", State: "FAILURE"},
+			},
+			want: "failure",
+		},
+		{
+			name: "StatusContext pending",
+			checks: []statusCheck{
+				{TypeName: "StatusContext", State: "SUCCESS"},
+				{TypeName: "StatusContext", State: "PENDING"},
+			},
+			want: "pending",
+		},
+		{
+			name: "StatusContext error",
+			checks: []statusCheck{
+				{TypeName: "StatusContext", State: "ERROR"},
+			},
+			want: "failure",
+		},
+		{
+			name: "mixed CheckRun and StatusContext all passing",
+			checks: []statusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SUCCESS"},
+				{TypeName: "StatusContext", State: "SUCCESS"},
+			},
+			want: "success",
+		},
+		{
+			name: "mixed with StatusContext failure",
+			checks: []statusCheck{
+				{TypeName: "CheckRun", Status: "COMPLETED", Conclusion: "SUCCESS"},
+				{TypeName: "StatusContext", State: "FAILURE"},
+			},
+			want: "failure",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ciStatus(tt.checks)
+			if got != tt.want {
+				t.Errorf("ciStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

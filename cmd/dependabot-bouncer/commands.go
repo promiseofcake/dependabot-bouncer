@@ -1,18 +1,34 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
-	"net/http"
-	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/promiseofcake/dependabot-bouncer/internal/scm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
+
+// parseRepo splits an "owner/repo" string into its parts.
+func parseRepo(arg string) (owner, repo string, err error) {
+	parts := strings.Split(arg, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid repository format: %s (expected owner/repo)", arg)
+	}
+	return parts[0], parts[1], nil
+}
+
+// buildDenyLists merges global and repo-specific deny lists from config.
+func buildDenyLists(repoKey string) (deniedPackages, deniedOrgs []string) {
+	deniedPackages = getStringSlice("global.denied_packages")
+	deniedOrgs = getStringSlice("global.denied_orgs")
+
+	deniedPackages = append(deniedPackages, getStringSlice("repositories."+repoKey+".denied_packages")...)
+	deniedOrgs = append(deniedOrgs, getStringSlice("repositories."+repoKey+".denied_orgs")...)
+
+	return removeDuplicates(deniedPackages), removeDuplicates(deniedOrgs)
+}
 
 var (
 	approveCmd = &cobra.Command{
@@ -21,11 +37,11 @@ var (
 		Long:  `Approve passing dependency update pull requests from Dependabot.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			parts := strings.Split(args[0], "/")
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid repository format: %s (expected owner/repo)", args[0])
+			owner, repo, err := parseRepo(args[0])
+			if err != nil {
+				return err
 			}
-			return runDependencyUpdate(parts[0], parts[1], false)
+			return runApprove(owner, repo)
 		},
 	}
 
@@ -35,11 +51,11 @@ var (
 		Long:  `Recreate all dependency update pull requests from Dependabot (including failing ones).`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			parts := strings.Split(args[0], "/")
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid repository format: %s (expected owner/repo)", args[0])
+			owner, repo, err := parseRepo(args[0])
+			if err != nil {
+				return err
 			}
-			return runDependencyUpdate(parts[0], parts[1], true)
+			return runRecreate(owner, repo)
 		},
 	}
 
@@ -54,65 +70,92 @@ configured in the 'repositories' section of your config file.
 You can specify multiple repositories: check owner1/repo1 owner2/repo2`,
 		RunE: runCheck,
 	}
-
-	closeCmd = &cobra.Command{
-		Use:   "close owner/repo",
-		Short: "Close old PRs with the dependencies label",
-		Long: `Close pull requests that have the 'dependencies' label and are older than
-the specified maximum age.
-
-Duration format uses Go's standard time.Duration parsing:
-  - Hours: 720h (30 days), 4320h (6 months), 8760h (1 year)
-  - Minutes: 43200m (30 days)
-  - Combined: 720h30m
-
-Examples:
-  dependabot-bouncer close owner/repo --older-than 720h
-  dependabot-bouncer close owner/repo --older-than 4320h --label dependencies
-  dependabot-bouncer close owner/repo --older-than 2160h --dry-run`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			parts := strings.Split(args[0], "/")
-			if len(parts) != 2 {
-				return fmt.Errorf("invalid repository format: %s (expected owner/repo)", args[0])
-			}
-			return runClose(parts[0], parts[1])
-		},
-	}
 )
 
-func init() {
-	closeCmd.Flags().Duration("older-than", 0, "Close PRs older than this duration (e.g., 720h for 30 days)")
-	closeCmd.Flags().String("label", "dependencies", "Label to filter PRs by")
-	closeCmd.Flags().Bool("dry-run", false, "Show PRs that would be closed without closing them")
-	viper.BindPFlag("older-than", closeCmd.Flags().Lookup("older-than"))
-	viper.BindPFlag("label", closeCmd.Flags().Lookup("label"))
-	viper.BindPFlag("dry-run", closeCmd.Flags().Lookup("dry-run"))
-}
-
-func runCheck(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
-
-	// Get GitHub token
-	token, err := resolveGitHubToken()
+func runApprove(owner, repo string) error {
+	prs, err := listFilteredPRs(owner, repo, true)
 	if err != nil {
 		return err
 	}
+	if len(prs) == 0 {
+		fmt.Println("No dependency updates to process")
+		return nil
+	}
 
-	// Get list of repositories to check
+	fmt.Printf("Processing %d pull requests...\n", len(prs))
+
+	for _, pr := range prs {
+		switch pr.MergeStateStatus {
+		case "DIRTY":
+			// Conflicts — recreate the PR so Dependabot resolves them.
+			if err := scm.RecreatePR(owner, repo, pr.Number); err != nil {
+				log.Printf("Warning: failed to recreate PR #%d: %v\n", pr.Number, err)
+				continue
+			}
+			log.Printf("Recreated PR #%d (conflicts): %s\n", pr.Number, pr.Title)
+
+		case "BEHIND":
+			// Behind main — request a rebase.
+			if err := scm.RebasePR(owner, repo, pr.Number); err != nil {
+				log.Printf("Warning: failed to rebase PR #%d: %v\n", pr.Number, err)
+			} else {
+				log.Printf("Requested rebase on PR #%d (behind main): %s\n", pr.Number, pr.Title)
+			}
+		}
+
+		if pr.ReviewDecision == "APPROVED" {
+			log.Printf("Already approved PR #%d: %s\n", pr.Number, pr.Title)
+		} else {
+			if err := scm.ApprovePR(owner, repo, pr.Number); err != nil {
+				log.Printf("Warning: failed to approve PR #%d: %v\n", pr.Number, err)
+				continue
+			}
+			log.Printf("Approved PR #%d: %s (package: %s)\n", pr.Number, pr.Title, pr.PackageName)
+		}
+
+		if err := scm.AutoMergePR(owner, repo, pr.Number); err != nil {
+			log.Printf("Warning: failed to enable auto-merge on PR #%d: %v\n", pr.Number, err)
+		} else {
+			log.Printf("Enabled auto-merge on PR #%d: %s\n", pr.Number, pr.Title)
+		}
+	}
+
+	return nil
+}
+
+func runRecreate(owner, repo string) error {
+	prs, err := listFilteredPRs(owner, repo, false)
+	if err != nil {
+		return err
+	}
+	if len(prs) == 0 {
+		fmt.Println("No dependency updates to process")
+		return nil
+	}
+
+	fmt.Printf("Processing %d pull requests...\n", len(prs))
+
+	for _, pr := range prs {
+		if err := scm.RecreatePR(owner, repo, pr.Number); err != nil {
+			log.Printf("Warning: failed to recreate PR #%d: %v\n", pr.Number, err)
+		} else {
+			log.Printf("Recreated PR #%d: %s (package: %s)\n", pr.Number, pr.Title, pr.PackageName)
+		}
+	}
+
+	return nil
+}
+
+func runCheck(cmd *cobra.Command, args []string) error {
 	var repos []string
 
 	if len(args) > 0 {
-		// Use command-line arguments
 		repos = args
 	} else {
-		// Get all configured repositories from the main config
 		repoMap := viper.GetStringMap("repositories")
 		for repo := range repoMap {
 			repos = append(repos, repo)
 		}
-
-		// If no repositories in main config, check for legacy check.repositories
 		if len(repos) == 0 {
 			repos = viper.GetStringSlice("check.repositories")
 		}
@@ -122,36 +165,20 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no repositories specified. Use command-line arguments or configure repositories in config file")
 	}
 
-	// Create GitHub client
-	c := scm.NewGithubClient(http.DefaultClient, token)
-
-	fmt.Println("📦 Open Dependabot PRs:")
+	fmt.Println("Open Dependabot PRs:")
 	fmt.Println("-------------------------")
 
 	for _, repoPath := range repos {
-		parts := strings.Split(repoPath, "/")
-		if len(parts) != 2 {
-			fmt.Printf("⚠️  Invalid repository format: %s (expected owner/repo)\n\n", repoPath)
+		owner, repo, pErr := parseRepo(repoPath)
+		if pErr != nil {
+			fmt.Printf("  Invalid: %v\n\n", pErr)
 			continue
 		}
 
-		owner, repo := parts[0], parts[1]
-		fmt.Printf("🔍 %s/%s\n", owner, repo)
+		fmt.Printf("%s/%s\n", owner, repo)
 
-		// Build query with deny lists
 		repoKey := fmt.Sprintf("%s/%s", owner, repo)
-
-		// Get deny lists - merge global and repo-specific
-		deniedPackages := getStringSlice("global.denied_packages")
-		deniedOrgs := getStringSlice("global.denied_orgs")
-
-		// Add repo-specific denies
-		deniedPackages = append(deniedPackages, getStringSlice("repositories."+repoKey+".denied_packages")...)
-		deniedOrgs = append(deniedOrgs, getStringSlice("repositories."+repoKey+".denied_orgs")...)
-
-		// Remove duplicates
-		deniedPackages = removeDuplicates(deniedPackages)
-		deniedOrgs = removeDuplicates(deniedOrgs)
+		deniedPackages, deniedOrgs := buildDenyLists(repoKey)
 
 		q := scm.DependencyUpdateQuery{
 			Owner:          owner,
@@ -160,10 +187,9 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			DeniedOrgs:     deniedOrgs,
 		}
 
-		// Get open Dependabot PRs with deny list info
-		prs, err := c.GetDependabotPRsWithDenyList(ctx, q)
+		prs, err := scm.ListDependabotPRs(q, false)
 		if err != nil {
-			fmt.Printf("   ❌ Error: %v\n\n", err)
+			fmt.Printf("   Error: %v\n\n", err)
 			continue
 		}
 
@@ -171,22 +197,12 @@ func runCheck(cmd *cobra.Command, args []string) error {
 			fmt.Println("   (no open Dependabot PRs)")
 		} else {
 			for _, pr := range prs {
+				fmt.Printf("   #%d: %s\n", pr.Number, pr.Title)
+				fmt.Printf("   %s\n", pr.URL)
 				if pr.Skipped {
-					fmt.Printf("   #%d: %s\n", pr.Number, pr.Title)
-					fmt.Printf("   %s\n", pr.URL)
-					fmt.Printf("   Status: 🚫 SKIPPED (%s)\n", pr.SkipReason)
+					fmt.Printf("   Status: SKIPPED (%s)\n", pr.SkipReason)
 				} else {
-					fmt.Printf("   #%d: %s\n", pr.Number, pr.Title)
-					fmt.Printf("   %s\n", pr.URL)
-					if pr.Status != "" {
-						statusIcon := "⏳"
-						if pr.Status == "success" {
-							statusIcon = "✅"
-						} else if pr.Status == "failure" {
-							statusIcon = "❌"
-						}
-						fmt.Printf("   Status: %s %s\n", statusIcon, pr.Status)
-					}
+					fmt.Printf("   CI: %s | Merge: %s\n", pr.CIStatus, pr.MergeStateStatus)
 				}
 				fmt.Println()
 			}
@@ -197,40 +213,19 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runDependencyUpdate(owner, repo string, recreate bool) error {
-	ctx := context.Background()
-
-	// Get GitHub token
-	token, err := resolveGitHubToken()
-	if err != nil {
-		return err
-	}
-
-	// Build the repository key for looking up repo-specific config
+// listFilteredPRs builds a query from config and returns filtered Dependabot PRs.
+func listFilteredPRs(owner, repo string, skipFailing bool) ([]scm.PRInfo, error) {
 	repoKey := fmt.Sprintf("%s/%s", owner, repo)
-
-	// Get deny lists - merge global and repo-specific
-	deniedPackages := getStringSlice("global.denied_packages")
-	deniedOrgs := getStringSlice("global.denied_orgs")
+	deniedPackages, deniedOrgs := buildDenyLists(repoKey)
 	ignoredPRs := getIntSlice("repositories." + repoKey + ".ignored_prs")
 
-	// Add repo-specific denies
-	deniedPackages = append(deniedPackages, getStringSlice("repositories."+repoKey+".denied_packages")...)
-	deniedOrgs = append(deniedOrgs, getStringSlice("repositories."+repoKey+".denied_orgs")...)
-
-	// Add command-line overrides (these take precedence)
 	if cmdPackages := viper.GetStringSlice("deny-packages"); len(cmdPackages) > 0 {
-		deniedPackages = append(deniedPackages, cmdPackages...)
+		deniedPackages = removeDuplicates(append(deniedPackages, cmdPackages...))
 	}
 	if cmdOrgs := viper.GetStringSlice("deny-orgs"); len(cmdOrgs) > 0 {
-		deniedOrgs = append(deniedOrgs, cmdOrgs...)
+		deniedOrgs = removeDuplicates(append(deniedOrgs, cmdOrgs...))
 	}
 
-	// Remove duplicates
-	deniedPackages = removeDuplicates(deniedPackages)
-	deniedOrgs = removeDuplicates(deniedOrgs)
-
-	// Log what we're doing
 	if len(deniedPackages) > 0 {
 		log.Printf("Denying packages: %v\n", deniedPackages)
 	}
@@ -241,8 +236,6 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 		log.Printf("Ignoring PRs: %v\n", ignoredPRs)
 	}
 
-	// Create GitHub client
-	c := scm.NewGithubClient(http.DefaultClient, token)
 	q := scm.DependencyUpdateQuery{
 		Owner:          owner,
 		Repo:           repo,
@@ -251,56 +244,7 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 		DeniedOrgs:     deniedOrgs,
 	}
 
-	// Determine skip failing behavior
-	skipFailing := !recreate // Approve mode skips failing, recreate mode doesn't
-
-	// Get dependency updates
-	updates, err := c.GetDependencyUpdates(ctx, q, skipFailing)
-	if err != nil {
-		return fmt.Errorf("failed to get dependency updates: %w", err)
-	}
-
-	if len(updates) == 0 {
-		fmt.Println("No dependency updates to process")
-		return nil
-	}
-
-	// Execute the appropriate action
-	fmt.Printf("Processing %d pull requests...\n", len(updates))
-
-	if recreate {
-		err = c.RecreatePullRequests(ctx, updates)
-	} else {
-		err = c.ApprovePullRequests(ctx, updates)
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to process pull requests: %w", err)
-	}
-
-	return nil
-}
-
-// resolveGitHubToken returns the GitHub token from config/env, falling back to `gh auth token`.
-func resolveGitHubToken() (string, error) {
-	token := viper.GetString("github-token")
-	var ghErr error
-	if token == "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output(); err == nil {
-			token = strings.TrimSpace(string(out))
-		} else {
-			ghErr = err
-		}
-	}
-	if token == "" {
-		if ghErr != nil {
-			return "", fmt.Errorf("GitHub token not found (gh auth token failed: %v). Either run 'gh auth login' or set --github-token flag / USER_GITHUB_TOKEN environment variable", ghErr)
-		}
-		return "", fmt.Errorf("GitHub token not found. Either run 'gh auth login' or set --github-token flag / USER_GITHUB_TOKEN environment variable")
-	}
-	return token, nil
+	return scm.ListDependabotPRs(q, skipFailing)
 }
 
 // Helper functions
@@ -321,7 +265,7 @@ func getIntSlice(key string) []int {
 
 func removeDuplicates(slice []string) []string {
 	seen := make(map[string]bool)
-	result := []string{}
+	var result []string
 
 	for _, item := range slice {
 		normalized := strings.ToLower(strings.TrimSpace(item))
@@ -332,59 +276,4 @@ func removeDuplicates(slice []string) []string {
 	}
 
 	return result
-}
-
-func runClose(owner, repo string) error {
-	ctx := context.Background()
-
-	// Get GitHub token
-	token, err := resolveGitHubToken()
-	if err != nil {
-		return err
-	}
-
-	// Get command options
-	olderThan := viper.GetDuration("older-than")
-	if olderThan == 0 {
-		return fmt.Errorf("--older-than flag is required (e.g., 720h for 30 days, 4320h for 6 months)")
-	}
-
-	label := viper.GetString("label")
-	dryRun := viper.GetBool("dry-run")
-
-	// Create GitHub client
-	c := scm.NewGithubClient(http.DefaultClient, token)
-
-	// Get old PRs matching criteria
-	prs, err := c.GetOldLabeledPRs(ctx, owner, repo, label, olderThan)
-	if err != nil {
-		return fmt.Errorf("failed to get old PRs: %w", err)
-	}
-
-	if len(prs) == 0 {
-		fmt.Printf("No PRs found with label '%s' older than %s\n", label, olderThan)
-		return nil
-	}
-
-	// Display PRs to be closed
-	fmt.Printf("Found %d PR(s) with label '%s' older than %s:\n\n", len(prs), label, olderThan)
-	for _, pr := range prs {
-		fmt.Printf("  #%d: %s\n", pr.Number, pr.Title)
-		fmt.Printf("       Created: %s (age: %s)\n", pr.CreatedAt, pr.Age)
-		fmt.Printf("       %s\n\n", pr.URL)
-	}
-
-	if dryRun {
-		fmt.Println("Dry run mode - no PRs were closed")
-		return nil
-	}
-
-	// Close the PRs
-	fmt.Printf("Closing %d PR(s)...\n", len(prs))
-	if err := c.ClosePullRequests(ctx, owner, repo, prs); err != nil {
-		return fmt.Errorf("failed to close PRs: %w", err)
-	}
-
-	fmt.Printf("Successfully closed %d PR(s)\n", len(prs))
-	return nil
 }
