@@ -284,16 +284,20 @@ func runDependencyUpdate(owner, repo string, recreate bool) error {
 // resolveGitHubToken returns the GitHub token from config/env, falling back to `gh auth token`.
 func resolveGitHubToken() (string, error) {
 	token := viper.GetString("github-token")
+	var ghErr error
 	if token == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output(); err != nil {
-			log.Printf("gh auth token fallback failed: %v", err)
-		} else {
+		if out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output(); err == nil {
 			token = strings.TrimSpace(string(out))
+		} else {
+			ghErr = err
 		}
 	}
 	if token == "" {
+		if ghErr != nil {
+			return "", fmt.Errorf("GitHub token not found (gh auth token failed: %v). Either run 'gh auth login' or set --github-token flag / USER_GITHUB_TOKEN environment variable", ghErr)
+		}
 		return "", fmt.Errorf("GitHub token not found. Either run 'gh auth login' or set --github-token flag / USER_GITHUB_TOKEN environment variable")
 	}
 	return token, nil
