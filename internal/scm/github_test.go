@@ -500,6 +500,49 @@ func TestWildcardPatterns(t *testing.T) {
 			packageName: "github.com/stable/api/v1",
 			shouldMatch: false,
 		},
+		// General wildcard patterns (prefix, suffix, contains)
+		{
+			name:        "Prefix wildcard match",
+			pattern:     "github.com/example/*",
+			packageName: "github.com/example/tool",
+			shouldMatch: true,
+		},
+		{
+			name:        "Prefix wildcard no match",
+			pattern:     "github.com/example/*",
+			packageName: "github.com/other/tool",
+			shouldMatch: false,
+		},
+		{
+			name:        "Suffix wildcard match",
+			pattern:     "*snapshot*",
+			packageName: "github.com/example/lib-snapshot-3",
+			shouldMatch: true,
+		},
+		{
+			name:        "Suffix-only wildcard match",
+			pattern:     "*.v1",
+			packageName: "gopkg.in/yaml.v1",
+			shouldMatch: true,
+		},
+		{
+			name:        "Suffix-only wildcard no match",
+			pattern:     "*.v1",
+			packageName: "gopkg.in/yaml.v2",
+			shouldMatch: false,
+		},
+		{
+			name:        "Custom contains wildcard",
+			pattern:     "*preview*",
+			packageName: "github.com/example/sdk-preview-release",
+			shouldMatch: true,
+		},
+		{
+			name:        "Custom contains wildcard no match",
+			pattern:     "*preview*",
+			packageName: "github.com/example/sdk-stable",
+			shouldMatch: false,
+		},
 	}
 
 	for _, tt := range tests {

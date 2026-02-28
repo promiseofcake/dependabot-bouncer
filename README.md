@@ -154,11 +154,22 @@ All deny lists are merged (not replaced), so command-line flags add to the confi
 
 ### Package Filtering
 
-- Package matching is case-insensitive and supports partial matches
-- Wildcard patterns are supported: `*alpha*`, `*beta*`, `*rc*`, `*/v0`
-- Version-specific denials: `github.com/gin-gonic/gin@v1`
-- Organization names are extracted from package paths:
-  - NPM scoped: `@datadog/browser-rum` → `datadog`
-  - GitHub: `github.com/datadog/datadog-go` → `datadog`
-  - gopkg.in: `gopkg.in/DataDog/dd-trace-go.v1` → `datadog`
-- All denied packages and organizations are skipped with a log message
+Denied packages are matched case-insensitively against the package name extracted from the PR title.
+
+**Exact match** — an entry without `*` or `@` must match the full package name:
+- `github.com/pkg/errors` matches `github.com/pkg/errors` but **not** `github.com/pkg/errors/v2`
+
+**Version-specific denial** — an entry containing `@` matches as a substring:
+- `github.com/gin-gonic/gin@v1` matches any package whose name contains that string
+
+**Wildcard patterns** — entries containing `*` support leading and/or trailing wildcards:
+- `*alpha*` — contains match (matches any package containing `alpha`)
+- `*/v0` — suffix match (matches any package ending with `/v0`)
+- `github.com/example/*` — prefix match (matches any package starting with `github.com/example/`)
+
+**Organization denial** — organizations are extracted from package paths and matched exactly (case-insensitive):
+- NPM scoped: `@datadog/browser-rum` → `datadog`
+- GitHub: `github.com/datadog/datadog-go` → `datadog`
+- gopkg.in: `gopkg.in/DataDog/dd-trace-go.v1` → `datadog`
+
+All denied packages and organizations are skipped with a log message.
