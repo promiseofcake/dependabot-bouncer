@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="shieldGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2d3748"/>
+      <stop offset="100%" stop-color="#1a202c"/>
+    </linearGradient>
+    <linearGradient id="ropeGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#c53030"/>
+      <stop offset="50%" stop-color="#e53e3e"/>
+      <stop offset="100%" stop-color="#c53030"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Shield body -->
+  <path d="M256 28 L462 100 L462 260 Q462 400 256 488 Q50 400 50 260 L50 100 Z"
+        fill="url(#shieldGrad)" stroke="#4a5568" stroke-width="6"/>
+
+  <!-- Shield inner highlight -->
+  <path d="M256 52 L440 116 L440 258 Q440 384 256 462 Q72 384 72 258 L72 116 Z"
+        fill="none" stroke="#4a5568" stroke-width="2" opacity="0.4"/>
+
+  <!-- Robot head - rounded rectangle -->
+  <rect x="176" y="120" width="160" height="130" rx="24" ry="24"
+        fill="#718096" stroke="#4a5568" stroke-width="3"/>
+
+  <!-- Antenna -->
+  <line x1="256" y1="120" x2="256" y2="90" stroke="#a0aec0" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="256" cy="84" r="8" fill="#e53e3e"/>
+
+  <!-- Sunglasses band -->
+  <rect x="188" y="158" width="136" height="38" rx="8" ry="8" fill="#1a202c"/>
+
+  <!-- Left lens -->
+  <rect x="192" y="160" width="56" height="34" rx="6" ry="6" fill="#0d0d0d"/>
+  <rect x="196" y="164" width="16" height="8" rx="3" ry="3" fill="#2d3748" opacity="0.5"/>
+
+  <!-- Right lens -->
+  <rect x="264" y="160" width="56" height="34" rx="6" ry="6" fill="#0d0d0d"/>
+  <rect x="268" y="164" width="16" height="8" rx="3" ry="3" fill="#2d3748" opacity="0.5"/>
+
+  <!-- Bridge -->
+  <rect x="248" y="168" width="16" height="6" rx="2" ry="2" fill="#1a202c"/>
+
+  <!-- Stern mouth -->
+  <rect x="224" y="216" width="64" height="6" rx="3" ry="3" fill="#4a5568"/>
+
+  <!-- Robot body / torso -->
+  <rect x="186" y="258" width="140" height="100" rx="16" ry="16"
+        fill="#718096" stroke="#4a5568" stroke-width="3"/>
+
+  <!-- Chest badge -->
+  <circle cx="256" cy="300" r="18" fill="#2d3748" stroke="#e53e3e" stroke-width="2"/>
+  <text x="256" y="307" text-anchor="middle" font-family="Arial Black, sans-serif"
+        font-size="18" font-weight="bold" fill="#e53e3e">DB</text>
+
+  <!-- Left arm (crossed) -->
+  <path d="M186 274 L130 310 L130 330 Q130 340 140 340 L200 340 L260 340"
+        fill="none" stroke="#718096" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M186 274 L130 310 L130 330 Q130 340 140 340 L200 340 L260 340"
+        fill="none" stroke="#4a5568" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"
+        opacity="0.3"/>
+
+  <!-- Right arm (crossed over left) -->
+  <path d="M326 274 L382 310 L382 330 Q382 340 372 340 L312 340 L252 340"
+        fill="none" stroke="#718096" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M326 274 L382 310 L382 330 Q382 340 372 340 L312 340 L252 340"
+        fill="none" stroke="#4a5568" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"
+        opacity="0.3"/>
+
+  <!-- Velvet rope - left post -->
+  <rect x="82" y="380" width="12" height="70" rx="3" ry="3" fill="#d4a843"/>
+  <circle cx="88" cy="378" r="10" fill="#d4a843"/>
+
+  <!-- Velvet rope - right post -->
+  <rect x="418" y="380" width="12" height="70" rx="3" ry="3" fill="#d4a843"/>
+  <circle cx="424" cy="378" r="10" fill="#d4a843"/>
+
+  <!-- Velvet rope - the rope itself (catenary curve) -->
+  <path d="M88 385 Q256 430 424 385" fill="none" stroke="url(#ropeGrad)"
+        stroke-width="8" stroke-linecap="round"/>
+  <path d="M88 385 Q256 430 424 385" fill="none" stroke="#feb2b2"
+        stroke-width="2" stroke-linecap="round" opacity="0.3"/>
+</svg>

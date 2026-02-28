@@ -9,6 +9,35 @@ import (
 	"github.com/spf13/viper"
 )
 
+const banner = `
+    ___  ___  ___  ___  _  _  ___   _   ___  ___ _____
+   |   \| __|| _ \| __|| \| ||   \ /_\ | _ )|   \_   _|
+   | |) | _| |  _/| _| | .  || |) |/ _ \| _ \| | | | |
+   |___/|___||_|  |___||_|\_||___//_/ \_\___/|___/ |_|
+    ___  ___  _   _ _  _  ___ ___ ___
+   | _ )/ _ \| | | | \| |/ __| __| _ \
+   | _ \ (_) | |_| | .  | (__| _||   /
+   |___/\___/ \___/|_|\_|\___|___|_|_\
+
+          ___
+         /   \
+        | O O |
+        |  _  |  "You're not on the list."
+        | |_| |
+    ____|_____|____
+   |  ___________  |
+   | |    [DB]    | |
+   | |___________| |
+   |___ _______ ___|
+      / \     / \
+     /   \   /   \
+    =======+=======
+   __|__       __|__
+  |     |     |     |
+  |     |     |     |
+  |_____|     |_____|
+`
+
 var (
 	cfgFile string
 	rootCmd = &cobra.Command{
@@ -19,6 +48,9 @@ var (
 Supports both approve and recreate modes with flexible deny lists for
 packages and organizations. Configuration can be provided via YAML file
 or command-line flags.`,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			fmt.Print(banner)
+		},
 	}
 )
 
