@@ -4,8 +4,7 @@
 # This file uses Viper configuration format.
 # Command-line flags override these settings.
 
-# GitHub token (or set USER_GITHUB_TOKEN env var; falls back to 'gh auth token')
-# github-token: your-token-here
+# Authentication is handled by the GitHub CLI (gh auth login)
 
 # Global settings apply to all repositories
 global:

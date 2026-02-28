@@ -4,12 +4,18 @@ A command-line tool to manage GitHub dependency updates, supporting both approve
 
 ## Features
 
-- Automatically approve or recreate Dependabot pull requests
-- Close stale PRs with specific labels based on age
-- Flexible deny lists for packages and organizations
+- Automatically approve Dependabot pull requests with passing CI
+- Recreate Dependabot pull requests (including those with failing CI)
+- Handle merge conflicts and out-of-date branches automatically
+- Enable auto-merge with squash strategy on approved PRs
+- Flexible deny lists for packages and organizations with wildcard support
 - YAML-based configuration file support
 - Per-repository configuration overrides
 - Command-line flags for one-off operations
+
+## Prerequisites
+
+- [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated via `gh auth login`
 
 ## Installation
 
@@ -19,13 +25,11 @@ go install github.com/promiseofcake/dependabot-bouncer/cmd/dependabot-bouncer@la
 
 ## Usage
 
-The tool requires a GitHub token with appropriate permissions. You can provide it via:
+The tool uses the GitHub CLI (`gh`) for all GitHub API operations. Make sure you are authenticated:
 
-- Environment variable: `export USER_GITHUB_TOKEN=your_github_token`
-- Command-line flag: `--github-token=your_token`
-- Config file: `github-token: your_token`
-
-If no token is configured, the tool falls back to `gh auth token` (requires [GitHub CLI](https://cli.github.com/) with `gh auth login`).
+```bash
+gh auth login
+```
 
 ### Commands
 
@@ -40,10 +44,6 @@ dependabot-bouncer recreate owner/repo
 dependabot-bouncer check
 dependabot-bouncer check owner1/repo1 owner2/repo2
 
-# Close old PRs with a specific label
-dependabot-bouncer close owner/repo --older-than 720h
-dependabot-bouncer close owner/repo --older-than 720h --dry-run
-
 # Show help
 dependabot-bouncer --help
 dependabot-bouncer approve --help
@@ -52,7 +52,6 @@ dependabot-bouncer approve --help
 ### Global Flags
 
 - `--config`: Path to config file (default: `~/.dependabot-bouncer/config.yaml`)
-- `--github-token`: GitHub token (overrides env var, config, and `gh auth token` fallback)
 - `--deny-packages`: Additional packages to deny (can be used multiple times)
 - `--deny-orgs`: Additional organizations to deny (can be used multiple times)
 
@@ -84,19 +83,6 @@ dependabot-bouncer approve myorg/payment-api \
 # Use custom config file
 dependabot-bouncer approve myorg/user-service \
   --config ./my-config.yaml
-
-# Override token for one-off use
-dependabot-bouncer approve myorg/payment-api \
-  --github-token ghp_differenttoken
-
-# Close PRs with "dependencies" label older than 30 days
-dependabot-bouncer close myorg/user-service --older-than 720h
-
-# Close PRs older than 6 months (dry run first)
-dependabot-bouncer close myorg/user-service --older-than 4320h --dry-run
-
-# Close PRs with a different label
-dependabot-bouncer close myorg/user-service --older-than 720h --label stale
 ```
 
 ## Configuration
@@ -114,6 +100,10 @@ global:
     - github.com/pkg/errors         # Use stdlib errors
     - github.com/dgrijalva/jwt-go   # Unmaintained
     - gopkg.in/mgo.v2               # Old MongoDB driver
+    - "*alpha*"                      # No alpha versions
+    - "*beta*"                       # No beta versions
+    - "*rc*"                         # No release candidates
+    - "*/v0"                         # No v0 packages
 
   denied_orgs:
     - datadog          # Expensive monitoring
@@ -152,39 +142,34 @@ All deny lists are merged (not replaced), so command-line flags add to the confi
 
 ## Behavior
 
-- Uses Viper for configuration management
-- Automatically loads from `~/.dependabot-bouncer/config.yaml`
-- Supports environment variables with `DEPENDABOT_BOUNCER_` prefix
-- Command-line flags take precedence over config file
-
-
 ### Command Modes
 
-- **approve**: Only processes PRs with passing CI checks
-- **recreate**: Processes all PRs, including those with failing CI
-- **close**: Closes PRs matching a label that are older than a specified duration
-
-### Close Command
-
-The `close` command helps clean up stale dependency PRs by closing those older than a specified duration.
-
-**Flags:**
-- `--older-than`: Required. Duration threshold using Go's `time.Duration` format
-- `--label`: Label to filter PRs by (default: `dependencies`)
-- `--dry-run`: Preview which PRs would be closed without closing them
-
-**Duration reference:**
-| Duration | Value |
-|----------|-------|
-| 30 days  | `720h` |
-| 90 days  | `2160h` |
-| 6 months | `4320h` |
-| 1 year   | `8760h` |
+- **approve**: Only processes PRs with passing CI checks. For each PR:
+  - PRs with merge conflicts (`DIRTY`) are recreated via `@dependabot recreate`
+  - PRs behind the base branch (`BEHIND`) are rebased via `@dependabot rebase`
+  - PRs not yet approved are approved
+  - Auto-merge is enabled with squash strategy
+- **recreate**: Processes all PRs regardless of CI status and comments `@dependabot recreate` on each
+- **check**: Lists open Dependabot PRs with their CI status and merge state across one or more repositories
 
 ### Package Filtering
 
-- Package matching is case-insensitive and supports partial matches
-- Organization names are extracted from package paths:
-  - NPM scoped: `@datadog/browser-rum` → `datadog`
-  - GitHub: `github.com/datadog/datadog-go` → `datadog`
-- All denied packages and organizations are skipped with a log message
+Denied packages are matched case-insensitively against the package name extracted from the PR title.
+
+**Exact match** — an entry without `*` or `@` must match the full package name:
+- `github.com/pkg/errors` matches `github.com/pkg/errors` but **not** `github.com/pkg/errors/v2`
+
+**Version-specific denial** — an entry containing `@` matches as a substring:
+- `github.com/gin-gonic/gin@v1` matches any package whose name contains that string
+
+**Wildcard patterns** — entries containing `*` support leading and/or trailing wildcards:
+- `*alpha*` — contains match (matches any package containing `alpha`)
+- `*/v0` — suffix match (matches any package ending with `/v0`)
+- `github.com/example/*` — prefix match (matches any package starting with `github.com/example/`)
+
+**Organization denial** — organizations are extracted from package paths and matched exactly (case-insensitive):
+- NPM scoped: `@datadog/browser-rum` → `datadog`
+- GitHub: `github.com/datadog/datadog-go` → `datadog`
+- gopkg.in: `gopkg.in/DataDog/dd-trace-go.v1` → `datadog`
+
+All denied packages and organizations are skipped with a log message.

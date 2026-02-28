@@ -257,24 +257,31 @@ func extractPackageInfo(title string) (packageName string, orgName string) {
 func isDenied(packageName, orgName string, deniedPackages, deniedOrgs []string) bool {
 	// Check if package is denied
 	for _, denied := range deniedPackages {
-		// Handle wildcard patterns
+		// Handle wildcard patterns (leading and/or trailing * only)
 		if strings.Contains(denied, "*") {
-			// Convert wildcard pattern to simple matching
 			pattern := strings.ToLower(denied)
 			pkg := strings.ToLower(packageName)
 
-			// Simple wildcard matching
-			if pattern == "*alpha*" && strings.Contains(pkg, "alpha") {
-				return true
-			}
-			if pattern == "*beta*" && strings.Contains(pkg, "beta") {
-				return true
-			}
-			if pattern == "*rc*" && strings.Contains(pkg, "rc") {
-				return true
-			}
-			if pattern == "*/v0" && strings.HasSuffix(pkg, "/v0") {
-				return true
+			hasPrefix := strings.HasPrefix(pattern, "*")
+			hasSuffix := strings.HasSuffix(pattern, "*")
+			inner := strings.Trim(pattern, "*")
+
+			switch {
+			case hasPrefix && hasSuffix:
+				// *foo* → contains
+				if strings.Contains(pkg, inner) {
+					return true
+				}
+			case hasPrefix:
+				// *foo → suffix match
+				if strings.HasSuffix(pkg, inner) {
+					return true
+				}
+			case hasSuffix:
+				// foo* → prefix match
+				if strings.HasPrefix(pkg, inner) {
+					return true
+				}
 			}
 			continue
 		}
