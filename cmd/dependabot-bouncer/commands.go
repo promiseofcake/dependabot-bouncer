@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/promiseofcake/dependabot-bouncer/internal/scm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -32,11 +33,27 @@ func buildDenyLists(repoKey string) (deniedPackages, deniedOrgs []string) {
 
 var (
 	approveCmd = &cobra.Command{
-		Use:   "approve owner/repo",
+		Use:   "approve [owner/repo...]",
 		Short: "Approve dependency update pull requests",
-		Long:  `Approve passing dependency update pull requests from Dependabot.`,
-		Args:  cobra.ExactArgs(1),
+		Long: `Approve passing dependency update pull requests from Dependabot.
+
+In interactive mode (-i), if no repositories are specified, all repositories
+from the config file are used.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			interactive, _ := cmd.Flags().GetBool("interactive")
+			if interactive {
+				repos := args
+				if len(repos) == 0 {
+					repos = reposFromConfig()
+				}
+				if len(repos) == 0 {
+					return fmt.Errorf("no repositories specified. Use command-line arguments or configure repositories in config file")
+				}
+				return runApproveInteractiveMulti(repos)
+			}
+			if len(args) != 1 {
+				return fmt.Errorf("requires exactly 1 arg(s), or use -i for interactive mode with multiple repos")
+			}
 			owner, repo, err := parseRepo(args[0])
 			if err != nil {
 				return err
@@ -123,6 +140,183 @@ func runApprove(owner, repo string) error {
 	return nil
 }
 
+// prResult tracks the outcome of an interactive review for a single PR.
+type prResult struct {
+	Number  int
+	Title   string
+	Action  string // "Approved", "Skipped", "Recreated"
+	Details []string
+	Errors  []string
+}
+
+func runApproveInteractiveMulti(repos []string) error {
+	allResults := make(map[string][]prResult)
+	var repoOrder []string
+
+	for _, repoPath := range repos {
+		owner, repo, err := parseRepo(repoPath)
+		if err != nil {
+			return err
+		}
+		repoKey := fmt.Sprintf("%s/%s", owner, repo)
+
+		fmt.Printf("Fetching Dependabot PRs for %s...\n", repoKey)
+		prs, err := listFilteredPRs(owner, repo, false)
+		if err != nil {
+			return err
+		}
+		if len(prs) == 0 {
+			fmt.Printf("No dependency updates for %s\n\n", repoKey)
+			continue
+		}
+
+		fmt.Printf("Found %d pull requests for %s\n\n", len(prs), repoKey)
+		repoOrder = append(repoOrder, repoKey)
+		quit := false
+
+		for i, pr := range prs {
+			title := fmt.Sprintf("PR #%d: %s (%d/%d)", pr.Number, pr.Title, i+1, len(prs))
+			desc := fmt.Sprintf("URL:    %s\nCI:     %s", hyperlink(pr.URL, pr.URL), pr.CIStatus)
+			if len(pr.CIFailures) > 0 {
+				desc += fmt.Sprintf("\nFailed: %s", strings.Join(pr.CIFailures, ", "))
+			}
+			desc += fmt.Sprintf("\nMerge:  %s\nReview: %s", pr.MergeStateStatus, pr.ReviewDecision)
+
+			var action string
+			err := huh.NewSelect[string]().
+				Title(title).
+				Description(desc).
+				Options(
+					huh.NewOption("Approve", "approve"),
+					huh.NewOption("Skip", "skip"),
+					huh.NewOption("Recreate", "recreate"),
+					huh.NewOption("Quit", "quit"),
+				).
+				Value(&action).
+				Run()
+			if err != nil {
+				return fmt.Errorf("prompt failed: %w", err)
+			}
+
+			switch action {
+			case "approve":
+				r := prResult{Number: pr.Number, Title: pr.Title, Action: "Approved"}
+				approvePR(owner, repo, pr, &r)
+				allResults[repoKey] = append(allResults[repoKey], r)
+
+			case "skip":
+				allResults[repoKey] = append(allResults[repoKey], prResult{Number: pr.Number, Title: pr.Title, Action: "Skipped"})
+
+			case "recreate":
+				r := prResult{Number: pr.Number, Title: pr.Title, Action: "Recreated"}
+				if err := scm.RecreatePR(owner, repo, pr.Number); err != nil {
+					r.Errors = append(r.Errors, fmt.Sprintf("failed to recreate: %v", err))
+				}
+				allResults[repoKey] = append(allResults[repoKey], r)
+
+			case "quit":
+				quit = true
+			}
+
+			if quit {
+				break
+			}
+		}
+
+		if quit {
+			break
+		}
+	}
+
+	printInteractiveSummary(repoOrder, allResults)
+	return nil
+}
+
+// approvePR handles the approval logic for a single PR, recording details and errors into the result.
+func approvePR(owner, repo string, pr scm.PRInfo, r *prResult) {
+	switch pr.MergeStateStatus {
+	case "DIRTY":
+		if err := scm.RecreatePR(owner, repo, pr.Number); err != nil {
+			r.Errors = append(r.Errors, fmt.Sprintf("failed to recreate (conflicts): %v", err))
+			return
+		}
+		r.Details = append(r.Details, "recreated (conflicts)")
+	case "BEHIND":
+		if err := scm.RebasePR(owner, repo, pr.Number); err != nil {
+			r.Errors = append(r.Errors, fmt.Sprintf("failed to rebase: %v", err))
+		} else {
+			r.Details = append(r.Details, "rebased")
+		}
+	}
+
+	if pr.ReviewDecision == "APPROVED" {
+		r.Details = append(r.Details, "already approved")
+	} else {
+		if err := scm.ApprovePR(owner, repo, pr.Number); err != nil {
+			r.Errors = append(r.Errors, fmt.Sprintf("failed to approve: %v", err))
+			return
+		}
+		r.Details = append(r.Details, "approved")
+	}
+
+	if err := scm.AutoMergePR(owner, repo, pr.Number); err != nil {
+		r.Errors = append(r.Errors, fmt.Sprintf("failed to enable auto-merge: %v", err))
+	} else {
+		r.Details = append(r.Details, "auto-merge enabled")
+	}
+}
+
+func printInteractiveSummary(repoOrder []string, allResults map[string][]prResult) {
+	// Flatten all results to check if anything was done.
+	var totalCount int
+	for _, results := range allResults {
+		totalCount += len(results)
+	}
+	if totalCount == 0 {
+		fmt.Println("\nResults: (no actions taken)")
+		return
+	}
+
+	fmt.Println("\nResults:")
+	fmt.Println(strings.Repeat("-", 60))
+
+	totals := map[string]int{}
+	for _, repoKey := range repoOrder {
+		results := allResults[repoKey]
+		if len(results) == 0 {
+			continue
+		}
+
+		if len(repoOrder) > 1 {
+			fmt.Printf("\n  %s\n\n", repoKey)
+		}
+
+		for _, r := range results {
+			fmt.Printf("  #%-5d %-10s %s\n", r.Number, r.Action, r.Title)
+			for _, d := range r.Details {
+				fmt.Printf("                  %s\n", d)
+			}
+			for _, e := range r.Errors {
+				fmt.Printf("                ! %s\n", e)
+			}
+			totals[r.Action]++
+		}
+	}
+
+	fmt.Println(strings.Repeat("-", 60))
+	var parts []string
+	if n := totals["Approved"]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d approved", n))
+	}
+	if n := totals["Skipped"]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped", n))
+	}
+	if n := totals["Recreated"]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d recreated", n))
+	}
+	fmt.Println(strings.Join(parts, ", "))
+}
+
 func runRecreate(owner, repo string) error {
 	prs, err := listFilteredPRs(owner, repo, false)
 	if err != nil {
@@ -146,19 +340,26 @@ func runRecreate(owner, repo string) error {
 	return nil
 }
 
+// reposFromConfig returns the list of repositories from the config file.
+func reposFromConfig() []string {
+	var repos []string
+	repoMap := viper.GetStringMap("repositories")
+	for repo := range repoMap {
+		repos = append(repos, repo)
+	}
+	if len(repos) == 0 {
+		repos = viper.GetStringSlice("check.repositories")
+	}
+	return repos
+}
+
 func runCheck(cmd *cobra.Command, args []string) error {
 	var repos []string
 
 	if len(args) > 0 {
 		repos = args
 	} else {
-		repoMap := viper.GetStringMap("repositories")
-		for repo := range repoMap {
-			repos = append(repos, repo)
-		}
-		if len(repos) == 0 {
-			repos = viper.GetStringSlice("check.repositories")
-		}
+		repos = reposFromConfig()
 	}
 
 	if len(repos) == 0 {
@@ -245,6 +446,12 @@ func listFilteredPRs(owner, repo string, skipFailing bool) ([]scm.PRInfo, error)
 	}
 
 	return scm.ListDependabotPRs(q, skipFailing)
+}
+
+// hyperlink wraps text in an OSC 8 terminal hyperlink escape sequence.
+// Terminals that support it render a clickable link; others show the text as-is.
+func hyperlink(url, text string) string {
+	return fmt.Sprintf("\033]8;;%s\033\\%s\033]8;;\033\\", url, text)
 }
 
 // Helper functions

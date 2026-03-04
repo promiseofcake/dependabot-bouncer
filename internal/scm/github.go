@@ -13,9 +13,11 @@ import (
 // gh returns two types: CheckRun (has status/conclusion) and StatusContext (has state).
 type statusCheck struct {
 	TypeName   string `json:"__typename"`
+	Name       string `json:"name"`       // CheckRun: check name (e.g. "build", "lint")
 	Status     string `json:"status"`     // CheckRun: COMPLETED, IN_PROGRESS, etc.
 	Conclusion string `json:"conclusion"` // CheckRun: SUCCESS, FAILURE, etc.
 	State      string `json:"state"`      // StatusContext: SUCCESS, FAILURE, PENDING, ERROR, EXPECTED
+	Context    string `json:"context"`    // StatusContext: context name
 }
 
 // ghPR represents a pull request as returned by `gh pr list --json`.
@@ -77,7 +79,7 @@ func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, err
 			continue
 		}
 
-		status := ciStatus(p.StatusCheckRollup)
+		status, ciFailures := ciStatus(p.StatusCheckRollup)
 
 		if skipFailing && status != "success" {
 			continue
@@ -90,6 +92,7 @@ func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, err
 			MergeStateStatus: p.MergeStateStatus,
 			ReviewDecision:   p.ReviewDecision,
 			CIStatus:         status,
+			CIFailures:       ciFailures,
 			PackageName:      packageName,
 		})
 	}
@@ -102,34 +105,54 @@ func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, err
 // The rollup contains two types: CheckRun (status/conclusion) and
 // StatusContext (state). Returns "pending" if there are no checks or any
 // check is still running, "failure" if any check failed, "success" otherwise.
-func ciStatus(checks []statusCheck) string {
+func ciStatus(checks []statusCheck) (string, []string) {
 	if len(checks) == 0 {
-		return "pending"
+		return "pending", nil
 	}
+
+	var failures []string
+	hasPending := false
+
 	for _, c := range checks {
 		if c.TypeName == "StatusContext" {
 			switch c.State {
 			case "SUCCESS":
 				// ok
 			case "PENDING", "EXPECTED":
-				return "pending"
+				hasPending = true
 			default:
-				return "failure"
+				name := c.Context
+				if name == "" {
+					name = "status check"
+				}
+				failures = append(failures, name)
 			}
 		} else {
 			// CheckRun
 			if c.Status != "COMPLETED" {
-				return "pending"
+				hasPending = true
+				continue
 			}
 			switch c.Conclusion {
 			case "SUCCESS", "SKIPPED", "NEUTRAL":
 				// ok
 			default:
-				return "failure"
+				name := c.Name
+				if name == "" {
+					name = "check run"
+				}
+				failures = append(failures, name)
 			}
 		}
 	}
-	return "success"
+
+	if len(failures) > 0 {
+		return "failure", failures
+	}
+	if hasPending {
+		return "pending", nil
+	}
+	return "success", nil
 }
 
 // ApprovePR approves a pull request.

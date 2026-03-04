@@ -5,6 +5,7 @@ A command-line tool to manage GitHub dependency updates, supporting both approve
 ## Features
 
 - Automatically approve Dependabot pull requests with passing CI
+- **Interactive mode**: review and act on PRs one at a time with approve, skip, recreate, or quit
 - Recreate Dependabot pull requests (including those with failing CI)
 - Handle merge conflicts and out-of-date branches automatically
 - Enable auto-merge with squash strategy on approved PRs
@@ -37,6 +38,12 @@ gh auth login
 # Approve passing dependency updates
 dependabot-bouncer approve owner/repo
 
+# Interactively review PRs one at a time
+dependabot-bouncer approve -i owner/repo
+
+# Interactively review PRs for all repositories in config file
+dependabot-bouncer approve -i
+
 # Recreate all dependency updates (including failing ones)
 dependabot-bouncer recreate owner/repo
 
@@ -49,6 +56,10 @@ dependabot-bouncer --help
 dependabot-bouncer approve --help
 ```
 
+#### Approve Flags
+
+- `-i, --interactive`: Review PRs one at a time, choosing an action for each. When no repositories are given as arguments, uses all repositories from the config file.
+
 ### Global Flags
 
 - `--config`: Path to config file (default: `~/.dependabot-bouncer/config.yaml`)
@@ -60,6 +71,13 @@ dependabot-bouncer approve --help
 ```bash
 # Approve all passing updates
 dependabot-bouncer approve myorg/user-service
+
+# Interactively review PRs — shows CI status, failure details, and a link for each PR
+dependabot-bouncer approve -i myorg/user-service
+dependabot-bouncer approve -i myorg/user-service myorg/payment-api myorg/gateway-service
+
+# Interactive mode using repositories from config file
+dependabot-bouncer approve -i
 
 # Recreate all updates (including failing ones)
 dependabot-bouncer recreate myorg/payment-api
@@ -149,6 +167,11 @@ All deny lists are merged (not replaced), so command-line flags add to the confi
   - PRs behind the base branch (`BEHIND`) are rebased via `@dependabot rebase`
   - PRs not yet approved are approved
   - Auto-merge is enabled with squash strategy
+- **approve -i** (interactive): Shows all PRs (including failing CI) one at a time with details — URL, CI status, failing check names, merge state, and review status. For each PR you choose an action:
+  - **Approve** — same logic as batch mode (handle conflicts/rebase, approve, auto-merge)
+  - **Skip** — leave the PR as-is
+  - **Recreate** — comment `@dependabot recreate`
+  - **Quit** — stop reviewing and print a summary of actions taken
 - **recreate**: Processes all PRs regardless of CI status and comments `@dependabot recreate` on each
 - **check**: Lists open Dependabot PRs with their CI status and merge state across one or more repositories
 
