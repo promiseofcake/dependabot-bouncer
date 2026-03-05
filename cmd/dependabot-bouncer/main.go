@@ -25,7 +25,7 @@ or command-line flags.`,
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.dependabot-bouncer/config.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default search: $XDG_CONFIG_HOME/dependabot-bouncer/config.yaml, or $HOME/.config/dependabot-bouncer/config.yaml if XDG_CONFIG_HOME is unset, then $HOME/.dependabot-bouncer/config.yaml)")
 	rootCmd.PersistentFlags().StringSlice("deny-packages", []string{}, "Packages to deny")
 	rootCmd.PersistentFlags().StringSlice("deny-orgs", []string{}, "Organizations to deny")
 
@@ -49,7 +49,14 @@ func initConfig() {
 			os.Exit(1)
 		}
 
-		// Search for config in home directory
+		// XDG config directory ($XDG_CONFIG_HOME or ~/.config)
+		xdgConfigHome := os.Getenv("XDG_CONFIG_HOME")
+		if xdgConfigHome == "" {
+			xdgConfigHome = filepath.Join(home, ".config")
+		}
+
+		// Search XDG path first, then legacy home directory path
+		viper.AddConfigPath(filepath.Join(xdgConfigHome, "dependabot-bouncer"))
 		viper.AddConfigPath(filepath.Join(home, ".dependabot-bouncer"))
 		viper.SetConfigType("yaml")
 		viper.SetConfigName("config")
