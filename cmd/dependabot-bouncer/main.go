@@ -32,6 +32,8 @@ func init() {
 	viper.BindPFlag("deny-packages", rootCmd.PersistentFlags().Lookup("deny-packages"))
 	viper.BindPFlag("deny-orgs", rootCmd.PersistentFlags().Lookup("deny-orgs"))
 
+	approveCmd.Flags().BoolP("interactive", "i", false, "Review and approve PRs one at a time")
+
 	rootCmd.AddCommand(approveCmd, recreateCmd, checkCmd)
 }
 

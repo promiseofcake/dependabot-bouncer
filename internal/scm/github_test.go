@@ -658,7 +658,7 @@ func TestCIStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ciStatus(tt.checks)
+			got, _ := ciStatus(tt.checks)
 			if got != tt.want {
 				t.Errorf("ciStatus() = %q, want %q", got, tt.want)
 			}
