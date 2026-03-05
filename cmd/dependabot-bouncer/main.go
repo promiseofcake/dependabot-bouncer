@@ -25,7 +25,7 @@ or command-line flags.`,
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $XDG_CONFIG_HOME/dependabot-bouncer/config.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default search: $XDG_CONFIG_HOME/dependabot-bouncer/config.yaml, or $HOME/.config/dependabot-bouncer/config.yaml if XDG_CONFIG_HOME is unset, then $HOME/.dependabot-bouncer/config.yaml)")
 	rootCmd.PersistentFlags().StringSlice("deny-packages", []string{}, "Packages to deny")
 	rootCmd.PersistentFlags().StringSlice("deny-orgs", []string{}, "Organizations to deny")
 
