@@ -331,9 +331,9 @@ func runRecreate(owner, repo string) error {
 
 	for _, pr := range prs {
 		if err := scm.RecreatePR(owner, repo, pr.Number); err != nil {
-			log.Printf("Warning: failed to recreate PR #%d: %v\n", pr.Number, err)
+			log.Printf("Warning: failed to recreate PR #%d: %v\n   %s\n", pr.Number, err, pr.URL)
 		} else {
-			log.Printf("Recreated PR #%d: %s (package: %s)\n", pr.Number, pr.Title, pr.PackageName)
+			log.Printf("Recreated PR #%d: %s (package: %s)\n   %s\n", pr.Number, pr.Title, pr.PackageName, pr.URL)
 		}
 	}
 

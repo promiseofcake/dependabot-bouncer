@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	// prListLimit caps how many PRs gh fetches in a single request. Requesting
-	// statusCheckRollup makes this a heavy GraphQL query; a smaller limit
-	// greatly reduces GitHub's chance of returning a 502 on busy repos.
-	prListLimit = 30
+	// dependabotAuthor is Dependabot's author login as gh renders it. Passing
+	// it to --author filters server-side so the list limit applies to
+	// Dependabot's PRs specifically, rather than the newest PRs of any author.
+	dependabotAuthor = "app/dependabot"
+	// prListLimit caps how many Dependabot PRs gh fetches in a single request.
+	prListLimit = 100
 	// maxRetries is the total number of attempts for a gh command that fails
 	// with a transient (server-side) error.
 	maxRetries = 4
@@ -94,6 +96,7 @@ func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, err
 		cmd := exec.Command("gh", "pr", "list",
 			"--repo", q.Owner+"/"+q.Repo,
 			"--base", "main",
+			"--author", dependabotAuthor,
 			"--json", "number,title,url,author,mergeStateStatus,reviewDecision,statusCheckRollup",
 			"--limit", fmt.Sprintf("%d", prListLimit),
 		)
