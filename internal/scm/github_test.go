@@ -677,7 +677,7 @@ func TestIsTransientError(t *testing.T) {
 		{"http 503", "failed to approve PR: HTTP 503: Service Unavailable", true},
 		{"http 504", "HTTP 504: Gateway Timeout", true},
 		{"http 500", "HTTP 500: Internal Server Error", true},
-		{"bad gateway text", "GraphQL: Something went wrong (Bad Gateway)", true}
+		{"bad gateway text", "GraphQL: Something went wrong (Bad Gateway)", true},
 		{"gateway timeout text", "request failed: Gateway Timeout", true},
 		{"timeout", "Post \"https://api.github.com/graphql\": context deadline exceeded (Client.Timeout exceeded)", true},
 		{"eof", "unexpected EOF", true},
