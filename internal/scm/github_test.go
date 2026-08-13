@@ -1,6 +1,7 @@
 package scm
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -664,4 +665,95 @@ func TestCIStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIsTransientError(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"http 502", "gh pr list failed: HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)", true},
+		{"http 503", "failed to approve PR: HTTP 503: Service Unavailable", true},
+		{"http 504", "HTTP 504: Gateway Timeout", true},
+		{"bad gateway text", "GraphQL: Something went wrong (Bad Gateway)", true},
+		{"gateway timeout text", "request failed: Gateway Timeout", true},
+		{"timeout", "Post \"https://api.github.com/graphql\": context deadline exceeded (Client.Timeout exceeded)", true},
+		{"eof", "unexpected EOF", true},
+		{"connection reset", "read tcp: connection reset by peer", true},
+		{"not found is permanent", "GraphQL: Could not resolve to a Repository with the name 'x/y'. (repository)", false},
+		{"401 is permanent", "HTTP 401: Bad credentials", false},
+		{"404 is permanent", "HTTP 404: Not Found", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTransientError(tt.msg); got != tt.want {
+				t.Errorf("isTransientError(%q) = %v, want %v", tt.msg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWithRetry(t *testing.T) {
+	// Speed up backoff for tests.
+	orig := retryDelay
+	retryDelay = 0
+	defer func() { retryDelay = orig }()
+
+	t.Run("succeeds first try", func(t *testing.T) {
+		calls := 0
+		err := withRetry("op", func() error { calls++; return nil })
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1", calls)
+		}
+	})
+
+	t.Run("retries transient then succeeds", func(t *testing.T) {
+		calls := 0
+		err := withRetry("op", func() error {
+			calls++
+			if calls < 3 {
+				return fmt.Errorf("HTTP 502: Bad Gateway")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 3 {
+			t.Errorf("calls = %d, want 3", calls)
+		}
+	})
+
+	t.Run("does not retry permanent error", func(t *testing.T) {
+		calls := 0
+		err := withRetry("op", func() error {
+			calls++
+			return fmt.Errorf("HTTP 404: Not Found")
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1", calls)
+		}
+	})
+
+	t.Run("gives up after max retries on persistent transient error", func(t *testing.T) {
+		calls := 0
+		err := withRetry("op", func() error {
+			calls++
+			return fmt.Errorf("HTTP 502: Bad Gateway")
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if calls != maxRetries {
+			t.Errorf("calls = %d, want %d", calls, maxRetries)
+		}
+	})
 }
