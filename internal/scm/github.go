@@ -31,8 +31,16 @@ var retryDelay = 500 * time.Millisecond
 // rather than a permanent one (auth, not found, bad query).
 func isTransientError(msg string) bool {
 	m := strings.ToLower(msg)
+
+	// Retry explicit HTTP 5xx statuses (e.g. "HTTP 502:", "HTTP 500:").
+	if idx := strings.Index(m, "http "); idx >= 0 && idx+8 <= len(m) {
+		code := m[idx+5 : idx+8]
+		if code[0] == '5' && code[1] >= '0' && code[1] <= '9' && code[2] >= '0' && code[2] <= '9' {
+			return true
+		}
+	}
+
 	for _, marker := range []string{
-		"http 502", "http 503", "http 504",
 		"bad gateway", "gateway timeout", "service unavailable",
 		"deadline exceeded", "timeout", "eof",
 		"connection reset", "connection refused",
