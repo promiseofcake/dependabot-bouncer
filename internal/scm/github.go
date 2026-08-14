@@ -252,16 +252,20 @@ func RecreatePR(owner, repo string, number int) error {
 		"--body", "@dependabot recreate")
 }
 
-// ghCommand runs a gh CLI command and returns a descriptive error on failure,
-// retrying on transient server-side errors.
+// ghCommand runs a gh CLI command and returns a descriptive error on failure.
+//
+// These commands mutate state (approve, merge, and posting rebase/recreate
+// comments), so they are deliberately NOT retried. On an ambiguous transient
+// failure — a lost response after GitHub already applied the request — a retry
+// would duplicate a non-idempotent side effect, e.g. posting a second
+// "@dependabot recreate" comment and triggering Dependabot twice. Retries are
+// reserved for the read-only pr list query in ListDependabotPRs.
 func ghCommand(desc string, args ...string) error {
-	return withRetry(desc, func() error {
-		cmd := exec.Command(args[0], args[1:]...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to %s: %s", desc, strings.TrimSpace(string(out)))
-		}
-		return nil
-	})
+	cmd := exec.Command(args[0], args[1:]...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to %s: %s", desc, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // extractPackageInfo extracts package name and organization from a Dependabot PR title
