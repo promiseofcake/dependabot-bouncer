@@ -7,7 +7,69 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
+
+const (
+	// dependabotAuthor is Dependabot's author login as gh renders it. Passing
+	// it to --author filters server-side so the list limit applies to
+	// Dependabot's PRs specifically, rather than the newest PRs of any author.
+	dependabotAuthor = "app/dependabot"
+	// prListLimit caps how many Dependabot PRs gh fetches in a single request.
+	prListLimit = 100
+	// maxRetries is the total number of attempts for a gh command that fails
+	// with a transient (server-side) error.
+	maxRetries = 4
+)
+
+// retryDelay is the base backoff between retries. It is a variable so tests
+// can set it to zero.
+var retryDelay = 500 * time.Millisecond
+
+// isTransientError reports whether a gh error message looks like a retriable
+// server-side failure (5xx, gateway errors, timeouts, dropped connections)
+// rather than a permanent one (auth, not found, bad query).
+func isTransientError(msg string) bool {
+	m := strings.ToLower(msg)
+
+	// Retry explicit HTTP 5xx statuses (e.g. "HTTP 502:", "HTTP 500:").
+	if idx := strings.Index(m, "http "); idx >= 0 && idx+8 <= len(m) {
+		code := m[idx+5 : idx+8]
+		if code[0] == '5' && code[1] >= '0' && code[1] <= '9' && code[2] >= '0' && code[2] <= '9' {
+			return true
+		}
+	}
+
+	for _, marker := range []string{
+		"bad gateway", "gateway timeout", "service unavailable",
+		"deadline exceeded", "timeout", "eof",
+		"connection reset", "connection refused",
+	} {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// withRetry runs fn, retrying up to maxRetries times on transient GitHub
+// errors with exponential backoff. Permanent errors return immediately.
+func withRetry(desc string, fn func() error) error {
+	var err error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err = fn()
+		if err == nil || !isTransientError(err.Error()) {
+			return err
+		}
+		if attempt < maxRetries {
+			backoff := retryDelay * time.Duration(1<<(attempt-1))
+			log.Printf("transient error on %s (attempt %d/%d), retrying in %s: %v",
+				desc, attempt, maxRetries, backoff, err)
+			time.Sleep(backoff)
+		}
+	}
+	return err
+}
 
 // statusCheck represents a single entry in statusCheckRollup.
 // gh returns two types: CheckRun (has status/conclusion) and StatusContext (has state).
@@ -37,19 +99,28 @@ type ghPR struct {
 // applying the filters described in the query. When skipFailing is true,
 // only PRs whose CI status is "success" are returned.
 func ListDependabotPRs(q DependencyUpdateQuery, skipFailing bool) ([]PRInfo, error) {
-	cmd := exec.Command("gh", "pr", "list",
-		"--repo", q.Owner+"/"+q.Repo,
-		"--base", "main",
-		"--json", "number,title,url,author,mergeStateStatus,reviewDecision,statusCheckRollup",
-		"--limit", "100",
-	)
+	var out []byte
+	err := withRetry("gh pr list", func() error {
+		cmd := exec.Command("gh", "pr", "list",
+			"--repo", q.Owner+"/"+q.Repo,
+			"--base", "main",
+			"--author", dependabotAuthor,
+			"--json", "number,title,url,author,mergeStateStatus,reviewDecision,statusCheckRollup",
+			"--limit", fmt.Sprintf("%d", prListLimit),
+		)
 
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("gh pr list failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		stdout, err := cmd.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				return fmt.Errorf("gh pr list failed: %s", strings.TrimSpace(string(exitErr.Stderr)))
+			}
+			return fmt.Errorf("gh pr list failed: %w", err)
 		}
-		return nil, fmt.Errorf("gh pr list failed: %w", err)
+		out = stdout
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	var ghPRs []ghPR
@@ -182,6 +253,13 @@ func RecreatePR(owner, repo string, number int) error {
 }
 
 // ghCommand runs a gh CLI command and returns a descriptive error on failure.
+//
+// These commands mutate state (approve, merge, and posting rebase/recreate
+// comments), so they are deliberately NOT retried. On an ambiguous transient
+// failure — a lost response after GitHub already applied the request — a retry
+// would duplicate a non-idempotent side effect, e.g. posting a second
+// "@dependabot recreate" comment and triggering Dependabot twice. Retries are
+// reserved for the read-only pr list query in ListDependabotPRs.
 func ghCommand(desc string, args ...string) error {
 	cmd := exec.Command(args[0], args[1:]...)
 	if out, err := cmd.CombinedOutput(); err != nil {
